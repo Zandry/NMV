@@ -1,0 +1,74 @@
+===== Les mécanismes de synchronisation dans le noyau
+Contexte du TP: 
+	- un compteur counter qui est initalisé à 0
+	- deux threads différentes, une thread incrémente le compteur et une thread décrémente le compteur
+	- logiquement, à la fin, le compteur est égale à 0
+	- structure completion pour savoir quand une thread termine son boulot
+	- kthread_create --> créer une thread et attendre la thread de monitoring qui est démarre. 
+	- ajouter dans le script pour avoir 2 cores dans la VM -smp 2 (ou plus) 
+
+1) Mécanisme de synchronisation avec mutex (counter.c)
+
+2) Mécanisme de synchronisation avec spinlock (counter_spinlock.c) 
+
+***** Différence entre mutex et spin_lock *****
+- pour mutex, on peut changer le contexte mais pour le spinlock, on ne peut pas. 
+
+- Exemple: si la machine a un coeur et on a 3 tâches différentes
+	+ Mutex: on peut changer le contexte et donner la main à l'un des deux autres tâches
+	+ Spinlock: on ne peut pas changer le contexte et les 2 tâches s'endorment dans l'attente de la terminaison de la tâche qui est entrée dans la section critique. 
+
+- Dans le cas du TP, spin_lock est plus performant que mutex car on ne doit pas changer le contexte, chaque itération finit son boulot et passe à l'autre (spin_lock), et dans mutex, on a éventuellement la tâche de changer le contexte pour chaque itération. 
+
+- les options d'exécution
+nr_worker (thread)	16	8	4	2
+nr_iter		25	26	27	28
+		mutex(+)			spin_lock(+) 
+dans le cas qu'il n'y a que 2 threads et 2 coeurs, spin_lock est plus performant car chaque thread (processus) prend un coeur, donc on n'a pas de changement de contexte, le programme exécute de la manière exclusive sur le coeur ==> plus rapide. Si on a plusieurs de thread, la solution de mutex sera plus efficace. 
+************************************************************************************
+
+************** Note en TP *************************************
++ par défaut, le noyau considère que si un processus (tâche) consomme trop de ressource ==> il y aurait un problème => planté 
+====> modifier la configuration du noyau pour foutre ce phénomène. 
+
+3) Mécanisme de synchronisation avec atomic 
+
+- atomic ==> une instruction de proccesseur (prendre la valeur dans la mémoire, traiter, et restocker dans la mémoire,...) 
+	atomic_t counter = ATOMIC_INIT(0)
+	atomic_inc
+	atomic_dec
+	#include <linux/atomic.h>
++ une instruction atomic fait le packaging des opération i++: 
+	r = i; // lire la valeur de la mémoire au register 
+	r = r+1; // incrémenter 
+	i = r; // écrire la valeur du register à la mémoire 
+ ==> éviter l'interruption au milieu de chaque opération 
+ 
+4) Traitement multicoeurs et prendre en compte la terminaison de processus des coeur 
+- Les coeurs travaillent indépendamment
+  
+ =================================
+ DEFINE_PER_CPU(long, counter)
+ ==> array des counter[ncpu]
+ 
+ long **
+ cpu = get_cpu() ==> à partir de cette ligne, on a désactivé toutes les préemptions 
+ x = per_cpu_ptr(&counter, cpu) [on peut avoir une préemption qui est peut-être des interruptions périodique qui coupe l'exécution du proccesseur...]
+ (*x)++; 
+ put_cpu(); ==> rendre le noyau en mode normal 
+ 
+ ====== autre version 
+ get_cpu_var(counter)++; 
+ put_cpu_var(counter);
+ 
+ ===== autre version ==> opération atomic 
+ this_cpu_inc(counter) 
+ this_cpu_dec(counter)
+ 
+- Prise en compte des terminaisons  => Faire la somme des compteur à la fin de la terminaison des cpu. L'examination des terminaison est pris en charge par le programmeur (voire l'implémentation de monitor dans le TP) 
+ long sum = 0;
+ int i;
+ for_each_possible_cpu(i){
+ 	sum += per_cpu(counter, i); 
+ }
+ 

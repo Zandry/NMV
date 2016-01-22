@@ -1,0 +1,23 @@
+cp /usr/data/sopena/nmv/nmv-tp.img /tmp/
+
+tar -xvJf /usr/data/sopena/nmv/linux-4.2.3.tar.xz -C /tmp/
+
+cp /usr/data/sopena/nmv/linux-config-nmv /tmp/linux-4.2.3/.config
+
+cd /tmp/linux-4.2.3
+
+make -j 16
+
+export KERNELDIR=/tmp/linux-4.2.3/
+
+
+
+- kthread est une thread qui déroule une tâche en mode Kernel. 
+- Si une tâche est en mode kernel, normalement, par défaut, elle est en mode TASK_UNINTERRUPTIBLE ***
+- Si la machine n'a qu'un seul coeur et elle démarre une kthread, dans ce cas forcément, on doit attendre la terminaison de cette tâche pour retourner en mode utilisateur. 
+- Si la machine a deux coeurs (ou plus de deux coeurs), un coeur lance kthread, si on désire retourner en mode utilisateur au moment qu'on veut, on peut demander au deuxième coeur pour appeler la fonction kthread_stop. Dans kthread que l'on a lancé, on peut tester si kthread devrait s'arrêter ou non par la fonction kthread_should_stop(), la thread s'arrête. 
+- Si la machine n'a qu'un seul coeur, et que on lance kthread par ce coeur, une solution pour retourner en mode utilisateur au moment qu'on veut est d'ajouter deux lignes dans la fonction de kthread
+	(1) set_current_state(TASK_INTERRUPTIBLE);
+	(2) schedule_timeout(5*HZ);
+   (1) pour dire que, au moment de cette ligne, je peux être interruptible 
+   (2) je m'endors dans 5 secondes, je rends la main au mode utilisateur (par exemple: je peux taper dans le terminal,... ); dans ces 5 secondes, l'utilisateur peux appeler la fonction kthread_stop pour arrêter le kthread; si le kthread est dans 5 secondes de s'endormir, il s'arrête tout de suite, sinon, il devrait fait le dernier test kthread_should_stop() et s'arrêter. 

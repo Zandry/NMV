@@ -1,0 +1,506 @@
+Question 1
+	Pour commencer faites un makefile qui compile testVersion.c et exécutez le programme obtenu. Que remarquez vous ?
+
+Réponse: 
+- L'affichage est faux: les versions dont la valeur mineur est impaire sont stables
+
+Question 2
+	A l’aide d’un débogueur expliquez les raisons de cet affichage.
+Réponse: 
+On n'a pas bien considéré le champs pour attribuer "stable" ou "unstable"
+
+Question 3
+	Implémentez une nouvelle version du test que vous appellerez isUnstableBis.
+Réponse: 
+Code 
+------------
+int isUnstableBis(struct version *v)
+{
+	return 1 & (v->minor);
+}
+-----------	
+
+Question 4
+	Modifiez la fonction displayVersion pour qu’elle prenne en argument la fonction de test à utiliser.
+Réponse:
+Code
+---------------------------
+void display_version(struct version *v, int (*function)(struct version*))
+{
+	printf("%2u-%lu %s", v->major, v->minor,
+			     function(v) ? "(unstable)" : "(stable)	");
+}
+--------------------------
+
+Question 5
+	Quel est l’empreinte mémoire d’une structure version ? Cet encombrement est-il optimum?
+Réponse: 
+Dans la mémoire, les champs de la structure version sont implémentés de la manière "séquentiel" l'un par l'autre et ils sont décalés à droite dans la limite de la taille d'un mot dans la mémoire. L'odre de ces champs dans la mémoire est comme l'ordre quand on définit la structure.  
+
+|--[major]| (2 octet et décalé à droite) 
+|[minor]| (4 octets et réservant un mot) 
+|---[flag]| (1 octet et décalé à droite)
+|----|
+|----|
+|----|
+
+"major" prend 2 octets, il reste 2 octets dans un mot. Par convention, après "major", c'est "minor", néanmoins, "minor" est un long, il prend 4octets, donc on doit allouer un nouveau mot de mémoire pour minor, il saute à la nouvelle ligne. Après "minor", c'est le champs "flag", il prend un octet d'un mot de la mémoire et il est décalé à droite. 
+
+Problème: Il y a des places disponibles qui ne sont pas utilisé. Ces places provoquent la fragemenation de la mémoire. 
+
+Question 6
+	Modifiez la structure version pour optimiser ce code.
+Réponse: 
+Code 
+----------------------------
+struct version {
+	unsigned long minor;
+	unsigned short major;	
+	char flags;
+};
+----------------------------
+ 
+|[minor]| (4 octets et réservant un mot) 
+|-[major][flag]| (2 octets pour major et 1 octet pour flag, ils sont décalés à droite)
+|----|
+|----|
+|----|
+
+Exercice 2 : Calcul d’offset
+
+Question 1
+	Dans un premier temps, implémentez un petit test qui alloue et initialise une structure commit puis affiche les adresses des différents champs.
+Réponse: 
+Code
+---------------------------
+#include<stdlib.h>
+#include<stdio.h>
+
+#include"version.h"
+
+int main(int argc, char const *argv[])
+{
+	struct version v = {.major = 3,
+			    .minor = 5,
+			    .flags = 0};
+ 	
+ 	char com[] = "hello world"; 
+ 	
+ 	struct commit c = {
+ 		.id = 10,
+ 		.version = v,
+ 		.comment = com
+ 	};
+ 	
+	printf("id: %p\n", &(c.id));
+	printf("version: %p\n", &(c.version));
+	printf("commit: %p\n", &c);
+	
+	printf("____________\n");
+	struct commit *res = commitOf(&(c.version)); 
+	printf("commit: %p\n", res);
+
+	return 0;
+}
+---------------------------
+
+Question 2
+On veut maintenant développer une fonction qui permet de retrouver l’adresse de la structure commit contenant une structure version. Cette nouvelle fonction doit être totalement indépendante de l’ordre et du nombre des champs de la structure commit et suivre le prototype suivant :
+	struct commit *commitOf(struct version *version);
+En vous aidant de la méthode vue en cours, implémentez cette fonction et comparez son résultat aux adresses obtenues dans la question précédente.
+
+Réponse: 
+Code
+------------------------
+#include<stdlib.h>
+#include<stdio.h>
+
+#include"version.h"
+
+struct commit *commitOf(struct version *version);
+
+int main(int argc, char const *argv[])
+{
+	struct version v = {.major = 3,
+			    .minor = 5,
+			    .flags = 0};	
+ 	
+ 	char com[] = "hello world"; 
+ 	
+ 	struct commit c = {
+ 		.id = 10,
+ 		.version = v,
+ 		.comment = com
+ 	};
+ 	
+	printf("id: %p\n", &(c.id));
+	printf("version: %p\n", &(c.version));
+	printf("commit: %p\n", &c);
+	
+	printf("____________\n");
+	struct commit *res = commitOf(&(c.version)); 
+	printf("commit: %p\n", res);
+
+	return 0;
+}
+
+struct commit *commitOf(struct version *version){ 
+	struct commit c; 
+	struct commit *res = (struct commit*)((char*)version - ((char*)&(c.version) - (char*)&c));
+	return res; 
+}
+------------------------
+
+Exercice 3 : Implémentation artisanale d’une liste doublement chaînée
+
+Question 1
+	Commencez par récupérer le fichier commit.h, commit.c et testCommit.c, puis complétez votre Makefile pour obtenir un exécutable de test.
+Réponse: 
+Code
+---------------
+CC=gcc
+FLAGS=-Wall -g
+
+TARGET_version = testVersion
+SRC_version=version.c testVersion.c
+OBJ_version=$(SRC_version:%.c=%.o)
+
+TARGET_commit = testCommit
+SRC_commit=commit.c testCommit.c
+OBJ_commit=$(SRC_commit:%.c=%.o)
+
+all: $(TARGET_commit)
+
+$(TARGET_version): $(OBJ_version)
+	$(CC) -o $@ $^ $(FLAGS)
+
+%.o:%.c
+	$(CC) -c -o $@ $^ $(FLAGS)
+
+$(TARGET_commit): $(OBJ_commit)
+	$(CC) -o $@ $^ $(FLAGS)
+
+
+clean:
+	rm -rf $(OBJ_version) $(TARGET_version)
+	rm -rf $(OBJ_commit) $(TARGET_commit)
+---------------
+
+Question 2: 
+	Dans un premier temps implémentez la fonction qui alloue et initialise un commit.
+	
+Réponse: 
+Code 
+---------------
+/**
+  * new_commit - alloue et initialise une structure commit correspondant au parametre
+  * @major:      numero de version majeure
+  * @minor:      numero de version mineure
+  * @comment:    pointeur vers une chaine de caracteres contenant un commentaire
+  */
+struct commit *new_commit(unsigned short major, unsigned long minor, char *comment)
+{
+	/* TODO : Exercice 3 - Question 2 */
+	struct commit *my_commit;
+	my_commit->id = nextId++; 
+	my_commit = (struct commit*)malloc(sizeof(struct commit));
+	(my_commit->version).major = major;
+	(my_commit->version).minor = minor; 
+	(my_commit->comment) = comment;
+	(my_commit->next) = NULL;
+	(my_commit->prev) = NULL;	
+  
+  return my_commit;
+}
+---------------
+ 	
+Question 3: 
+La structure construite précédemment n'est pas encore inséré dans la liste doublement chaînée. Pour ce faire, vous allez développer les fonctions add_minor_commit et add_major_commit. Vous appuierez sur la fonction static insert_commit qui s'occupera de l'insertion des commit construits par ces deux fonctions. 
+
+Réponse:
+Code:
+------------------------
+/**
+  * insert_commit - insert sans le modifier un commit dans la liste doublement chainee
+  * @from:       commit qui deviendra le predecesseur du commit insere
+  * @new:        commit a inserer - seul ses champs next et prev seront modifie
+  */
+static struct commit *insert_commit(struct commit *from, struct commit *new)
+{
+	/* TODO : Exercice 3 - Question 3 */
+	struct commit *temp;
+	temp = last->next;
+	last->next = new;
+	new->prev = last;
+	new->next = temp; 
+  return new;
+}
+
+/**
+  * add_minor_commit - genere et insert un commit correspondant a une version mineure
+  * @from:           commit qui deviendra le predecesseur du commit insere
+  * @comment:        commentaire du commit
+  */
+struct commit *add_minor_commit(struct commit *from, char *comment)
+{
+	/* TODO : Exercice 3 - Question 3 */
+	struct commit *my_new_commit = new_commit((from->version).major, (from->version).minor++, comment);
+	struct commit *inserted = insert_commit(from, my_new_commit);
+  return inserted;
+}
+
+/**
+  * add_major_commit - genere et insert un commit correspondant a une version majeure
+  * @from:           commit qui deviendra le predecesseur du commit insere
+  * @comment:        commentaire du commit
+  */
+struct commit *add_major_commit(struct commit *from, char *comment)
+{
+	/* TODO : Exercice 3 - Question 3 */
+  	struct commit *my_new_commit = new_commit((from->version).major++, 0, comment);
+	struct commit *inserted = insert_commit(from, my_new_commit);
+  return inserted;
+}
+------------------------
+
+Question 4: 
+Il est temps maintenant d'utilser la liste doublement chaînée pour parcourir l'historiue des commits display_history. 
+Réponse: 
+Code:
+-----------------------
+/**
+  * display_history - affiche tout l'historique, i.e. l'ensemble des commits de la liste
+  * @from:           premier commit de l'affichage
+  */
+void display_history(struct commit *from)
+{
+	/* TODO : Exercice 3 - Question 4 */
+	struct commit next; 
+	next = from; 
+	while(next != NULL){
+		display_commit(next);
+		next=next->next;
+	}
+}
+-----------------------
+
+Question 5: 
+Pour finir implémentez une fonction qui parcours l'historique à la recherche d'un commit correspondant au numéro de version passé en paramètre. Cette fonction infos affichera le contenu du commit si elle le trouve ou "Not here !!!" dans le cas contraire. 
+Réponse: 
+Code: 
+------------------
+/**
+  * infos - affiche le commit qui a pour numero de version <major>-<minor>
+  * @major: major du commit affiche
+  * @minor: minor du commit affiche
+  */
+void infos(struct commit *from, int major, unsigned long minor)
+{
+	/* TODO : Exercice 3 - Question 5 */
+	struct commit *ptr; 
+	ptr = from; 
+	while(ptr != NULL){
+		if((ptr->version).major == major && (ptr->version).minor == minor){
+			display_commit(ptr);
+			return;
+		}
+	}
+	printf("Not here!!!\n");
+}
+------------------
+
+Exercice 4: De l'intérêt des list_head
+Pour optimiser la recherche d'un commit, nous pourrions commencer par parcourir les commits majeurs pour limiter les parcours des versions mineurs à celles de la version majeur désirée. 
+
+Question 1: 
+Pour réaliser cette optimisation nous allons avoir besoin d'une deuxième liste doublement chaînée limitée aux commits majeurs. Peut-on envisager une factorisation du code d'insertion de de suppression tel que nous l'avons conçu?
+
+Réponse: 
+Oui, on pourrait profiter potentiellement le code qu'on a conçu pour l'insertion et la suppression d'un commit. 
+
+Question 2: 
+Plutôt que de réinventer la roue, nous allons utiliser l'implémentation des listes du noyau Linux. Pour commencer, charger le fichier list.h et parcourez le. Ce fichier est réalité une version légèrement modifiée du header original de façon à limiter les dépendances. 
+
+Question 3: 
+Après avoir remplacé vos champs next/prev par un champ list de type list_head dans commit.h, adaptez votre implémentation des fonctions du squelette. Appréciez la simplicité de ce nouveau code. 
+
+Réponse:
+------- commit.h ---------
+#ifndef COMMIT_H
+#define COMMIT_H
+#include"version.h"
+struct commit;
+struct commit {
+	unsigned long id;
+	struct version version;
+	char *comment;
+	struct list_head list; // Question 4.3
+};
+struct commit *new_commit(unsigned short major, unsigned long minor, char *comment);
+struct commit *add_minor_commit(struct commit *from, char *comment);
+struct commit *add_major_commit(struct commit *from, char *comment);
+struct commit *del_commit(struct commit *victim);
+void display_commit(struct commit *from);
+void display_history(struct commit *from);
+void infos(struct commit *from, int major, unsigned long minor);
+#endif
+--------------------------
+
+------- commit.c ---------
+#include<stdlib.h>
+#include<stdio.h>
+
+#include"commit.h"
+
+static int nextId = 0;
+
+/**
+  * new_commit - alloue et initialise une structure commit correspondant au parametre
+  * @major:      numero de version majeure
+  * @minor:      numero de version mineure
+  * @comment:    pointeur vers une chaine de caracteres contenant un commentaire
+  */
+struct commit *new_commit(unsigned short major, unsigned long minor, char *comment)
+{
+	/* TODO : Exercice 3 - Question 2 */
+	struct commit *my_commit;
+	my_commit->id = nextId++; 
+	my_commit = (struct commit*)malloc(sizeof(struct commit));
+	(my_commit->version).major = major;
+	(my_commit->version).minor = minor; 
+	(my_commit->comment) = comment;
+	INIT_LIST_HEAD(&(new_c->list)); // Question 4.3
+  
+  return my_commit;
+}
+
+/**
+  * insert_commit - insert sans le modifier un commit dans la liste doublement chainee
+  * @from:       commit qui deviendra le predecesseur du commit insere
+  * @new:        commit a inserer - seul ses champs next et prev seront modifie
+  */
+static struct commit *insert_commit(struct commit *from, struct commit *new)
+{
+	/* TODO : Exercice 3 - Question 3 */
+	list_add(&(new->list), &(from->list)); // Question 4.3
+  return new;
+}
+
+/**
+  * add_minor_commit - genere et insert un commit correspondant a une version mineure
+  * @from:           commit qui deviendra le predecesseur du commit insere
+  * @comment:        commentaire du commit
+  */
+struct commit *add_minor_commit(struct commit *from, char *comment)
+{
+	/* TODO : Exercice 3 - Question 3 */
+	struct commit *my_new_commit = new_commit((from->version).major, (from->version).minor++, comment);
+	struct commit *inserted = insert_commit(from, my_new_commit);
+  return inserted;
+}
+
+/**
+  * add_major_commit - genere et insert un commit correspondant a une version majeure
+  * @from:           commit qui deviendra le predecesseur du commit insere
+  * @comment:        commentaire du commit
+  */
+struct commit *add_major_commit(struct commit *from, char *comment)
+{
+	/* TODO : Exercice 3 - Question 3 */
+  	struct commit *my_new_commit = new_commit((from->version).major++, 0, comment);
+	struct commit *inserted = insert_commit(from, my_new_commit);
+  return inserted;
+}
+
+/**
+  * del_commit - extrait le commit de l'historique
+  * @victim:         commit qui sera sorti de la liste doublement chainee
+  */
+struct commit *del_commit(struct commit *victim)
+{
+	list_del(&(victim->list));
+  return NULL;
+}
+
+/**
+  * display_commit - affiche un commit : "2:  0-2 (stable) 'Work 2'"
+  * @c:             commit qui sera affiche
+  */
+void display_commit(struct commit *c)
+{
+	/* TODO : Exercice 3 - Question 4 */
+	printf("%d: ", c->id);
+	display_version(&(c->version), isUnstableBis); 
+	printf("\t\t'%s'\n", c->comment);
+}
+
+/**
+  * display_history - affiche tout l'historique, i.e. l'ensemble des commits de la liste
+  * @from:           premier commit de l'affichage
+  */
+void display_history(struct commit *from)
+{
+	/* TODO : Exercice 4 - Question 3 */
+	struct list_head *pos;
+
+	list_for_each(pos, &(from->list))
+	{
+		display_commit(list_entry(pos, struct commit, list));
+	}
+	printf("\n");
+}
+
+/**
+  * infos - affiche le commit qui a pour numero de version <major>-<minor>
+  * @major: major du commit affiche
+  * @minor: minor du commit affiche
+  */
+void infos(struct commit *from, int major, unsigned long minor)
+{
+	struct commit *ptr = from;
+	struct commit *ptr2 = from;
+	struct list_head *pos;
+	struct list_head *pos2;
+
+	list_for_each(pos2, &(from->major_list))
+	{
+		ptr2 = list_entry(pos2, struct commit, major_list); // chaque major commit
+		if (((ptr2->version).major == major))
+		{
+			list_for_each(pos, &(ptr2->list)) // parcourir chaque minor commit de major commit trouvé
+			{
+				ptr = list_entry(pos, struct commit, list); // un minor commit 
+				if (((ptr->version).major == major) && ((ptr->version).minor == minor))
+				{
+					display_commit(ptr);
+					return;
+				}
+			}
+		}
+	}
+
+	printf("%2u-%lu Not Here !!!\n", major, minor);
+}
+
+/**
+  * commitOf - retourne le commit qui contient la version passe en parametre
+  * @version:  pointeur vers la structure version dont cherche le commit
+  * Note:      cette fonction continue de fonctionner meme si l'on modifie
+  *            l'ordre et le nombre des champs de la structure commit.
+  */
+struct commit *commitOf(struct version *version)
+{
+	/* TODO : Exercice 2 - Question 2 */
+	return (struct commit *)((void *)version - (void *)(&(((struct commit *)0)->version)));
+}
+--------------------------
+
+Exercice 5: Double liste et raccourcis 
+Nous allons maintenant pouvoir ajouter une deuxième liste dédiée aux versions majeures. Cette nouvelles implémentation sera basée sur deux nouveaux champs:
+	major_list de type list_head, il servira à relier les commits majeurs;
+	major_parent un pointeur qui permet depuis chaque version mineure de retrouver la version majeure correspondante.
+
+Question 1: 
+Après avoir ajouté ces deux champs dans la structure commit, corrigez les fonctions d'insertion et testez les. Pour l'instant, vous laissez de côté la fonction de suppression del_commit. 
+
+Réponse: 

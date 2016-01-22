@@ -1,0 +1,15 @@
+cp /usr/data/sopena/nmv/nmv-tp.img /tmp/
+
+tar -xvJf /usr/data/sopena/nmv/linux-4.2.3.tar.xz -C /tmp/
+
+cp /usr/data/sopena/nmv/linux-config-nmv /tmp/linux-4.2.3/.config
+
+cd /tmp/linux-4.2.3
+
+make -j 16
+
+export KERNELDIR=/tmp/linux-4.2.3/
+
+
+
+

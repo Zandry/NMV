@@ -1,0 +1,1 @@
+cmd_/users/nfs/Etu4/3303574/Documents/NMV/TP10/counter_atomic.ko := ld -r -m elf_x86_64 -T ./scripts/module-common.lds --build-id  -o /users/nfs/Etu4/3303574/Documents/NMV/TP10/counter_atomic.ko /users/nfs/Etu4/3303574/Documents/NMV/TP10/counter_atomic.o /users/nfs/Etu4/3303574/Documents/NMV/TP10/counter_atomic.mod.o

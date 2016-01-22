@@ -1,0 +1,1045 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<meta http-equiv="content-type" content="text/html; charset=utf-8">
+<meta name="generator" content="ReText 4.1.2">
+<title>sar_nmv</title>
+</head>
+<body>
+<h1>NVM</h1>
+<p>Corentin GUILLEVIC, 2015/2016</p>
+<ul>
+<li>Sécurité développement : Buffer Overflow, fprintf, technique du canari</li>
+<li>Technique du canari : c'est un nombre (secret, qui est écrit dans la pile) qu'on place au-dessus du pointeur du stockage du EIP. Si jamais on fais un buffer overflow, on écrit du coup à la place du canari. Si jamais un attaquant écrivait n'importe et qu'il efface le canari, il ne pourra jamais le retrouver (c'est comme un sceau, une fois cassé on ne peut plus le remettre).</li>
+<li>Pour les TP, installer QEMU sur la machine physique.</li>
+<li>Qu'est-ce qu'un système ? Un système est une couche logicielle qui permet d'abstraire du matériel ou une couche logicielle bas-niveau, pour offrir une API aux applications de façon simple. Du coup, un OS va abstraire le matériel pour une application sur un ordinateur ; et un système réparti, comme un middleware, va abstraire le réseau et les bases de données, etc... pour une application. Du coup, la base de données d'en dessous est une aussi une application. Donc un système est une couche logicielle qui permet d'offrir une API haut-niveau en faisant une abstraction de la couche du dessous.</li>
+<li>Les débouchés du master SAR ne sont pas que coder dans les systèmes, c'est aussi des développeurs experts qui vont pouvoir coder ou concevoir des applications très efficaces (parce que eux ont une connaissance du système sous-jacant ; quand on connait très bien l'OS alors on peut faire du code par dessus qui exploite les fonctionnalités bas-niveau de l'OS).</li>
+</ul>
+<h2>Cours 1</h2>
+<p>Le but de ce cours est de comprendre comment Git est fait à l'intérieur et comment il fonctionne, car il a été développé comme un système de fichier versionné. L'autre intérêt est que tout développement noyau est fait autours de Git.</p>
+<ul>
+<li>Git est un gestionnaire de version distribué. L'idée d'un gestionnaire de version est pouvoir garder un historique c'est-à-dire les différentes versions d'un projet et de pouvoir revenir
+en arrière (ce n'est pas juste d'avoir les numéros des versions mais de pouvoir après revenir en arrière).</li>
+<li>Il repose sur deux mécanismes. Il faut d'abord qu'est-ce qui permet de passer de la version X à la version X+1 : on verra que c'est très simple et que cela fonctionne avec <strong>patch</strong> (ce n'est ni plus ni moins qu'un <strong>diff</strong>).</li>
+<li>Un patch est ni plus ni moins que la sortie de la commande <strong>diff</strong>. La seule chose que sait faire la commande <strong>patch</strong> est de prendre la sortie pour transformer le fichier X en X+1 (et vice-versa). C'est la base de tous les gestionnaires de versions.</li>
+<li><strong>diff</strong> est capable de faire quelque chose de récursif, c'est-à-dire nous donner les différences sur tout un répertoire. Comme il nous donne la différence sur tous les répertoires, il tient compte du nom des répertoires. Quand on applique le patch, on peut lui dire "ignore les noms" (c'est surtout le cas quand on a un répertoire <strong>toto/</strong> qui contient quelque chose, un <strong>totoV2/</strong> qui contient aussi quelque chose, si jamais on applique depuis la racine qui contient ces répertoires, il va nous dire que tout est différent car le fichier <strong>toto/f1</strong> n'existe pas dans <strong>totoV2/</strong>. Donc pour ignorer le 1er, 2ème ou 3ème niveau d'hiérarchie dans les noms des fichiers, il y a l'option <strong>-p</strong>.<br>D'ailleurs dans le noyau, il y a une règle très importante qui dit que les patchs doivent être appliqués avec l'option <strong>-p1</strong> (ils sont faits pour être appliqué avec l'option <strong>-p1</strong>). Cela veut dire que l'on doit avoir tout le reste des répertoires qui portent le même nom, tandis que le répertoire racine a deux noms différents.</li>
+<li>Un <em>historique</em> est un graphe orienté <em>acyclique</em>. Pourquoi un historique n'est pas un arbre ?
+Un arbre est un graphe connexe (ce n'est pas un arbre s'il n'est pas connexe) non-orienté acyclique. La notion de racine/père est orthogonale à un arbre.<br>D'ailleurs, quand on va faire des recherches, des <em>merges</em>, etc... ce n'est pas aussi simple de le faire dans un arbre.<br>Une forêt est l'équivalant d'un arbre non-connexe, il peut donc y avoir plusieurs arbres.</li>
+<li>Une <em>branche</em> est toutes les versions qui sont accessibles depuis la version vi (soit C12, voir les slides du cours).</li>
+<li>Le <em>tronc</em> (ou <em>branche principale</em>) n'a aucune définition formelle (elle n'a rien de plus d'un point de vue formel que les autres branches). Grosso-modo, la <em>branche principale</em> est la branche issue des dernières versions stables. Le terme "version stable" n'a aucune définition formelle, c'est un choix, c'est arbitraire (cette branche n'a rien de particulier autre qu'on l'a définie que c'était la branche principale).</li>
+<li>Une <em>sous-branche</em> (notion importante vis-à-vis des <em>merges</em>) est tous les éléments qui seront accessibles depuis c21 (voir transparents du cours) mais qui ne sont pas dans c10. Donc grosso-modo c'est tous les éléments de la branche c21 moins les éléments de la branche c12 (qui est stable).</li>
+<li>
+<p>Un <em>merge</em> est le moment où on va fusionner deux <em>patchs</em>. Par exemple (voir les transparents) C13 est l'ensemble des merges des modifications qui ont été faites de C5 à C2 et de C6 à C8.</p>
+</li>
+<li>
+<p>Au départ, le noyau Linux était développé sous CVS (qui disparait aujourd'hui). CVS a rapidement montré ses limites. Les développeurs du noyau ont donc basculé pendant 3 ans sur Bitkeeper, qui était décentralisé et qui permettait d'avoir des latences d'accès aux serveurs réduites, de la tolérance aux pannes, etc... En prenant de l'ampleur, Bitkeeper a changé de licence, et il n'était pas dans l'esprit pour le noyau Linux de payer une licence. Il a donc été décidé de créer un gestionnaire de version décentralisé pour le noyau. Git a été développé en 12 jours (du moins le gros de sa structure) par Linus Torvald.</p>
+</li>
+<li>Ce qui est très intéressant avec Git, c'est de voir pourquoi c'est rapide et comment Linus Torvald s'y est pris. Quand on étudie la structure interne de Git, il faut garder en tête que Git a été pensé et développé comme étant le système de fichiers versionné du XXIème siècle. C'est-à-dire qu'au démarrage, Linus Torvald s'est dit : pourquoi a-t-on des gestionnaires de version alors qu'on a 1 <em>filesystem</em>, pourquoi le <em>filesystem</em> ne serait pas gestionnaire de version ? Il pensait donc façon noyau, c'est-à-dire qu'il a considéré le gestionnaire de version comme un système de fichiers. Ainsi, on retrouve dans toute la structure interne de Git exactement les mêmes concepts que dans les systèmes de fichiers (avec l'orientation "tout est fichier").</li>
+<li>L'architecture interne de Git est réduite, exactement comme dans le noyau, à très peu d'éléments (une économie complète). Les <em>blobs</em> servent à enregistrer le contenu des fichiers, les <em>trees</em> servent à stocker l'arborescence, les <em>commits</em> sont les différentes versions et les <em>tags</em> identifient les versions particulières. C'est tellement une économie de concepts que les points précédents (<em>tree</em>, <em>commit</em> et <em>tag</em>) sont des blobs particuliers.<br>Ce qu'il faut retenir, c'est que les <em>blobs</em>, les <em>trees</em>, les <em>commits</em> et les <em>tags</em> sont des <em>blobs</em>, dont les <em>trees</em>, <em>commits</em> et <em>tags</em> sont des <em>blobs</em> un peu particuliers.</li>
+<li>L'un des concepts fondamentaux est de partir du principe qu'un <em>blob</em> est immuable. C'est exactement comme l'une des structures de données de Java : les <em>chaînes</em> (qui sont non-mutables). L'intérêt des <em>chaînes</em> en Java est que dans la spécification Java, toute chaînes identiques correspondent au même objet. Si on écrit deux fois "toto", c'est forcément le même objet en mémoire. Du coup, on compare les références pour comparer les chaînes. Si on concatène la chaîne "to" avec la chaîne "to", alors on créé une nouvelle chaîne nommée "toto" (on ne va pas agrandir l'un des deux objets). Si quelqu'un rentre "toto" au clavier et que "toto" est déjà stocké, alors on rééférencera le même objet.<br>C'est à ça que servent les objets non-mutables, et c'est l'idée qui a été reprise pour Git. L'avantage est que cela sert à identifier les choses de façon simple. De plus, on va essayer de ne jamais supprimer les <em>blobs</em> ??? (26m38), ce qui veut dire grosso-modo que quand on met quelque chose dans le système, cela restera à vie.<br>Du coup puisque c'est non-mutable, de la même façon qu'en Java on identifie des chaînes de caractères non pas avec leur contenu mais avec leur référence (l'adresse de la chaîne), dans Git on va les identifier grâce à un <em>checksum</em> (qui est un nombre). Ce nombre est fait avec SHA-1. Est-ce qu'avec un <em>checksum</em> intelligent, on pourrait éviter 100% de collions ? C'est impossible, mais on part du principe que sur 1 projet, la probabilité de collision dans SHA-1 est extrêmement petite. En résumé, on ne peut pas modifier un <em>blob</em>, du coup on va calculer un <em>checksum</em> pour le contenu du <em>blob</em> ce qui va donner un identifiant. Puisqu'il est non-mutable, son identifiant ne bougera pas (comme les chaînes de caractères). Grâce à cela, on va organiser les fichiers sous forme d'un graphe orienté acyclique.</li>
+<li>
+<p>À chaque fois que l'on va voir des <em>tags</em>, les <em>trees</em> ou n'importe quoi, on peut toujours remplacer par le nom d'un <em>blob</em> (puisque tout est <em>blob</em>).</p>
+</li>
+<li>
+<p>Les <em>blobs</em> sont identifiés de manière unique à travers SHA-1 mais sont non-mutables. Cela signifie qu'à chaque fois que l'on modifie le fichier associé, vu qu'on ne peut pas modifier le contenu du <em>blob</em>, on va recréer un nouveau <em>blob</em>. Ainsi, chaque modification d'un fichier entraîne la création d'un nouveau <em>blob</em>. Que nous rappelle par rapport au noyau Linux le fait qu'un <em>blob</em> ne dépend pas du nom et de l'emplacement du fichier ? Le nom d'un fichier ne se trouve pas dans celui-ci, il se trouve dans son répertoire. De plus, le fichier est référencé par un numéro d'inode. En résumé, le <em>blob</em> ne dépend pas du nom ni de l'emplacement du fichier auquel il est lié.</p>
+</li>
+<li>Par exemple (voir les transparents), on a un <em>blob</em> nommé <strong>33f3a..</strong> qui contient son contenu et sa taille. La taille est le début d'un <em>blob</em> car cela minimise encore plus le risque de collision (il faudrait arriver un fichier qui fait la même taille et avoir le même <em>checksum</em>). Le nom du fichier est le <em>checksum</em>.</li>
+<li>On va vu comment stocker les fichiers, à présent on souhaite stocker le nom de ces fichiers et la hiérarchie. Pour cela on a les <em>trees</em>. Un <em>tree</em> est un <em>blob</em> particulier qui va contenir soit la référence vers un <em>blob</em> soit vers un autre <em>tree</em>. C'est exactement pareil sous Linux quand un répertoire enregistre d'autres répertoires ou des fichiers.<br>En plus, les <em>blobs</em> sont là où on va associer le nom du <em>blob</em> avec le <em>blob</em> lui-même. Du coup quand on considère l'ensemble des <em>trees</em>, cela fait une hiérarchie*.</li>
+<li>Avec les <em>blobs</em> et les <em>trees</em>, on a de quoi stocker une structure de données : un <em>filesystem</em>. Mais ce qui nous intéresse, c'est de gérer des versions. On introduit donc la notion de <em>commit</em> : commiter signifie d'enregistrer une nouvelle version globale ou partielle de nos fichiers (ou plutôt de nos dépôts). Comment identifie-t-on un <em>commit</em> ? Pour comprendre ce qu'a amélioré Git, il faut revenir quelques années en arrière : dans CVS on avait un fichier A, on avait pour la version 1, on avait donc le patch 1 de la version 1 d'enregistré. Grosso-modo on avait une liste avec file1-patch1, file2-patch2, file3/patch3, etc... Cela pose 2 problèmes :<ul>
+<li>dans CVS, il fallait appliquer tous les patchs pour calculer 1 version. C'était cohérent mais long.</li>
+<li>La seconde problématique est que comme la numérotation se fait fichier par fichier ; il n'y a rien qui dit que pour avoir un état cohérent, il faut avoir telle ou telle version de tel ou tel fichier. Du coup, on était obligé à l'époque une fois qu'on avait fait un ensemble de <em>commits</em> de tagger les fichiers (pour que les développeurs puissent déterminer pour quelle version du logiciel développé le fichier appartient).</li>
+</ul>
+</li>
+<li>Est arrivé SVN, qui au lieu d'avoir une numérotation de <em>commits</em> par fichiers, on avait une numérotation globale. Le défaut restant est qu'on a toujours à appliquer des <em>patchs</em>.</li>
+<li>Git est reparti de cette idée, mais au lieu de stocker des <em>patchs</em>, par défaut il va stocker les fichiers (il va garder les <em>blobs</em> tels quels). Ainsi au lieu de partir d'un point de vue <em>patch</em> quelque part, il va stocker les versions des fichiers. Si on regarde les transparents de cours (slide 25), on a vraiment A2 (on n'a pas Delta2, où pour avoir la version 4 il faut patcher une fois le fichier A, puis avec Delta1 puis Delta2).<br>En résumé, le coeur de Git au niveau des versions est :<ul>
+<li>Numérotation globale</li>
+<li>Avec la notion de <em>blob</em>, on garde chaque version des fichiers</li>
+</ul>
+</li>
+<li>Du coup, un <em>commit</em> sera un pointeur vers un arbre (qui permet d'identifier une version de notre arbre) et des pointeurs vers d'autres copies (pour faire l'arbre des copies). Ce qu'on rajoute cependant est l'auteur et le commiteur (notions importantes pour le noyau). Pourquoi ces différences ? Dans l'organisation des développeurs noyau, il y a ceux qui soumettent des <em>patchs</em> et ceux qui les acceptent (et qui vont réellement patcher le noyau). Depuis 2 ans, les développeurs exigent de savoir qui a écrit telle ligne car il y a eu précédemment des problèmes concernant les changements de licence GPL (cette licence a plusieurs versions). Si on ne sait pas qui a fait quoi, on ne peut pas changer de versions GPL car on n'a pas pu demander à tout le monde. Un <em>commit</em> est également accompagné d'un commentaire.</li>
+<li>{Écouter 46m55}, dans le fichier on a le SHA-1 d'un ???, un seul, qui est la racine de notre arborescence. La racine de notre projet est la racine des <em>blobs</em>. {fin réécoute 47m55}</li>
+<li>Les <em>tags</em> sont des <em>blobs</em> particuliers qui permettent d'identifier un <em>commit</em> en lui donnant un nom "plus sympathique".</li>
+</ul>
+<p>48m13</p>
+<p>Différents historiques de versions d'un projet (pouvoir revenir en arrière).</p>
+<p>diff est capable de faire la différence de tout un répertoire (récursif).</p>
+<p>Les patchs du noyau sont faits pour être appliqués avec l'option "-p 1"</p>
+<p>un arbre est un graphe connexe, sans cycle (acyclique), non orienté. Un historique n'est pas un arbre, notamment parce qu'il est orienté.
+Une forêt est l'équivalant d'un arbre non connexe.</p>
+<p>Git a été pensé comme un système de fichier.</p>
+<p>Blob : enregsitrer le contenu des fichiers
+Tree, Commit et Tag sont des blobs (un peu particuliers).</p>
+<h2>TP1</h2>
+<p>Comme pour beaucoup de projets, si le numéro mineur est pair, c'est que la version en question est stable ; s'il est impair, la version est instable.
+On verra qu'il y a un id dans les commits (c'est plus pour le débuggage). À chaque fois que l'on va faire un <strong>new_commit()</strong>, on lui affectera un identifiant unique (on incrémentera la variable globale dédiée), ce qui permettra du coup d'identifier chaque malloc().</p>
+<p>Ce qu'on veut faire, c'est vérifier si le numéro mineur est pair ou impair. Pour cela, les profs ont directement accédé au bit correspondant dans la structure. C'est pour cela qu'on convertit le pointeur en tableau de caractères et en essayant d'accéder directement à une case du tableau. La question est pourquoi ça ne marche pas (un numéro impair est marqué comme stable, alors qu'il devrait être marqué comme instable). Pour savoir pourquoi ça fait ça, on peut utiliser GDB.
+Ce n'est pas une erreur de conception, on se décale de la taille du premier champ et on va directement regarder le 1er bit du 2ème champ. Le problème est : comparer l'adresse de ce champ par rapport à l'adresse réelle du champ. Ainsi, pour tester comparer l'adresse théorique (que le code du prof calcule) par rapport à la vraie adresse du champ (pour accéder à l'adresse du champ, on peut faire &amp;(laStructure.nomDuChamp). On constatera que GCC fait quelque chose de particulier.</p>
+<p>Pour comprendre la 1ère question : si on regarde la structure, on a de déclaré : 1 short (qui fait 2 octets), 1 long (4 octets) et 1 char (1 octet) {schéma des carrés 2-4-1 collés ensembles sur 1 ligne). C'est ce qu'on aurait eu si c'était continu en mémoire.
+Le problème est que quand on charge les adresses, on les a mis sur des mots (parce qu'il y a des adresses à charger, on lui dis "lis telle adresse mémoire pour accélerer les accès aux données).
+La norme C garantie une chose : si on a un ordre des champs, ils sont alors stockés en mémoire dans cet ordre-là. Elle garantie aussi que l'adresse du premier octet de la structure est l'adresse du premier champ (si on fait v et &amp;v-&gt;majeur, c'est la même adresse). Cependant, GCC fait autre chose : {schméa des carrés 2-4-1 avec padding, le prof a dis qu'il avait fait un schéma sur 32 bits} (on représente la mémoire comme ça), il va éviter de laisser des champs à cheval entre deux mots. L'optimisation ne consiste pas à aligner au début de chaque champ mais d'éviter qu'un champ soit à cheval.
+En résumé : si on fait des structures, l'ordre est respecté, le début de la structure est bien le 1er champ, mais le compilateur fera des optimisations. Ces optmisations font que déduire les adresses dans les structures est très compliqué de le faire à la main (d'autant plus que si on le fait à la main, notre code serait propre à 1 version de GCC, car les concepteurs du compilateur peuvent décider dans 1 an, pour diverses raisons, de faire autrement).</p>
+<p><span style="color:green;">{schéma des carrés 2-4-1 avec padding, le prof a dis qu'il avait fait un schéma sur 32 bits}</span> On a un padding, l'idée serait à priori de placer le char dedans. Cette optimisation est-elle fait par nous ou le compilateur ? C'est à nous de le faire. Tel que les profs ont fourni l'exercice, GCC fait une optimisation sur la structure, il met du padding pour pas que ça soit coupé sur 2 mots. Ce qu'on peut faire, sachant que le standard C garantie que les champs sont dans le même ordre en mémoire que celui qu'on a déclaré, c'est déplacer le flag (char) après le champ "majeur", cela aura pour effet de réduire le gros padding que GCC voulait mettre (si on change pas l'ordre des champs).
+Attention : le standard C garantie que l'ordre est le même qu'on a déclaré, mais il ne garanti pas que les champs soient contigus en mémoire.</p>
+<p>Faire une conversion en <strong>char*</strong> change-t-il la représentation ? Ça ne change rien, car dans tous les cas c'est un pointeur. Cela permet juste d'avoir un accès sous forme de tableau sans Warning de GCC. Donc si on veut manipuler notre structure sous forme de tableau, on converti le pointeur en <strong>char*</strong>, mais l'adresse reste la même (d'alleurs si on fait sur GDB un <strong>print</strong> de <strong>v</strong> et <strong>print</strong> de <strong>(char*)v</strong>, c'est la même adresse).</p>
+<p>Dans le cadre du TP, on nous demande de renvoyer le commit qui correspond à une version. Le commit ne nous est pas donné, on a juste la version, où on doit se débrouiller avec pour envoyer le commit correspondant. Grâce à l'exercice précédent, on sait que l'adresse du début de la structure est celle du premier champ. Nous dans commit.op, on reçoit finalement l'adresse de ce champ-là, c'est un pointeur sur une version ce qui veut dire que c'est l'adresse du champ dans la structure. Si on dessine la structure commit en mémoire, <span style="color:green;">{structure commit avec ses champs}</span></p>
+<p>Une fois que GCC a déterminé la façon dont il stocke la structure, ce sera partout la même.
+On peut se servir d'une adresse, par exemple l'adresse 0 et de la recaster. On a droit de recaster n'importe quelle adresse et dire par exemple que c'est une structure "commit".</p>
+<pre><code>&amp;(((struct commit *)0)-&gt;id)
+&amp;(((struct commit *)0)-&gt;version)
+&amp;(((struct commit *)0)-&gt;comment)
+</code></pre>
+
+<p>Le 1er exercice est là pour nous dire <em>qu'on n'a pas le droit</em> de calculer à la main avec des <strong>sizeof()</strong> les champs d'une structure car GCC fera ce qu'il veut (il nous garanti que l'ordre est bon, mais il mettra du <em>padding</em> comme il veut. Donc si on veut regarder que le 1er bit d'un champ est pair, alors on accède directement au champ.
+La seule chose d'une structure auquel on accès c'est "a.toto", et si on veut l'adresse de ce champ c'est &amp;(a.toto).</p>
+<p>La première forme faisait un décalage pour essayer de trouver pile poil le champ, le problème est qu'on ne sait pas combien de padding GCC va en mettre, on ne peut pas faire de calcul. Si on avait la garantie que GCC ne faisait pas de padding, ça marcherait. Ainsi, la solution est de simplement donner l'adresse du champ.</p>
+<p>Astuce pour arriver à calculer automatiquement l'écart entre le début de la structure et un autre champ. On a droit de déclarer qu'une adresse 0 est un pointeur de type "struct commit". Normalement on n'a pas le droit d'utiliser 0, c'est un pointeur 0 en train d'essayer d'accéder à une zone mémoire qui n'existe pas. Mais comme on veut l'adresse du champ "version" de la structure commit, le compilateur va optimiser et n'ira pas voir en mémoire, il va faire le calcul tout seul. 
+Ainsi, si par exemple on essaye de savoir quelle est l'adresse du champ "id" pour une structure "commit" d'adresse 0, on verra que l'adresse sera 0 car on a la garantie que "id" est au début de la structure. Si on fait pareil pour le champ "version", on aura l'adresse du champ "version" pour une structure "commit" d'adresse 0 (ce sera en fait son décalage par rapport au début de la structure). Une fois qu'on aura le décalage de la structure "version" par rapport au début de la structure, ce sera alors facile pour nous de faire l'opération inverse pour connaitre quel est le début du "commit" (quand on a une structure "version").
+Cette astuce nous donne exactement le décalage (offset) entre le début de la structure et le début du champ "version". On peut essayer cette astuce pour différents champs.
+Il y a une variante, où on possède une vraie adresse (qui a été allouée) d'un champ : on accède au champ puis on fait "adresse de début - adresse où on est", ce qui donne le décalage. C'est simple, ça marche toujours et c'est statique.</p>
+<p>L'exercice 2 est les listes doublement chainées.</p>
+<p>Quand on fait une flèche (-&gt;), cela se traduit par un décalage. Quand on fait "n'importe quelle adresse-&gt;version", cela se traduit par "décale-toi de x octets" ce qui correspond à trouver le champ "version".</p>
+<p><span style="color:green;">{structure toto}</span></p>
+<pre><code>struct toto &gt; 10 octets
+struct toto&amp;
+P + 3 = ?? # équivaut à P[3]
+(char*) P + 3 # égal à 1003
+(struct commit*) ((char*)v - (char*)decalage)
+</code></pre>
+
+<p>Révision sur les pointeurs, arithmétique des pointeurs : on a une structure "toto" qui fait 10 octets. On fait ensuite un pointeur (<strong>struct toto *P</strong>) où P est l'adresse 1000. Que se passe t-il si on fait P + 3 ? Déjà on doit savoir qu'en C, P + 3 est pareil que P[3] (c'est un tableau, si on veut aller à la 3ème structure "toto", l'adresse serait 1030). Le 3 fois la taille de la structure est automatiquement fait par le "+" de P + 3, le "+" implique de multiplier par la taille de "toto". Donc quand on fait P + 3, ça fait 1030, ce n'est pas 1003.<br>Mais si on ne veut pas faire la multiplication implicite du "+", c'est-à-dire qu'on veut vraiment avoir 1003, il suffit de faire <strong>char*</strong> (on dit maintenant que l'adresse 1000 n'est pas une adresse de type "adresse de structure toto", c'est "adresse d'octets"). Donc du coup si on fait +3, on obtient bien 1003.
+C'est pour ça que quand on va utiliser la structure "commit", si on prend "l'adresse qu'on nous a donné" (de la version) - le décalage", il va nous donner n'importe quoi. C'est logique parce que le "-" sera "moins 3 fois la taille d'une version". Du coup la solution est de recaster <span style="color:green;">{dernière ligne}</span>.<br>C'est du C très avancé.</p>
+<p>On peut ouvrir par curiosité le <strong>list.h</strong> et regarder les deux macros qui s'appellent <strong>offsetof</strong> et <strong>container_of</strong>. Ces deux macros font exatement ce qu'on a fait dans le premier exercice.</p>
+<p>Par convention, on ne met pas de typedef dans le code noyau car on masque le vrai type. Cependant, on peut utiliser <strong>typedef</strong> dans des cas particuliers. Par exemple, int est un int8, pour dire que c'est un int de 8 octets.</p>
+<p>Rappel sur le mot-clé <strong>static</strong> : dans le fichier <strong>commit.c</strong>, on peut constater que la fonction <strong>insert_commit()</strong> est statique. Parce que c'est une fonction utilitaire qui sert à factoriser du code (add_minor et add_major), mais une personne n'est jamais censée l'utiliser. Donc quant on déclare <strong>static</strong>, cela permet de dire lorsqu'on va faire notre <strong>.o</strong> le symbole ne sera pas disponible à l'extérieur, ça encapsule la fonction uniquement dans le <strong>.c</strong> où elle se trouve. Alors que pour les autres fonctions le symbole est exporté donc n'importe qui peut aller les utiliser.<br><u>Attention</u> : Le <strong>static</strong> en C n'a rien à voir avec le concept de classe de Java. D'ailleurs, comment est le <strong>main()</strong> de Java ? Il est <strong>static</strong>. Qu'est-ce qu'il se passe si on déclare <strong>static</strong> le <strong>main()</strong> en C ? Comme le symbole n'est pas exporté, quand on va lancer notre programme il va nous dire qu'il ne trouve pas de <strong>main()</strong>.</p>
+<p>Quand on ouvre le fichier <strong>list.h</strong>, regarder en particuliers les fonctions et macros {du graphe exercice 4}, ce sont vraiment les opérations de base qu'on doit faire pour les listes.</p>
+<p>Mini-cours sur les structures, où on veut montrer la problématique en C qui est derrière les listes doublement chaînées et comment dans le noyau on a une programmation générique des listes. Quand on a une liste chaînée, on a ça {graphe "souvent représenté), qui est dessiné dans la plupart des bouquins (et c'est normal).  Ce qui est faux (on s'en moquerait si on état en programmation haut-niveau de la partie des adresses), c'est les flèches : en réalité ce qu'on connait c'est le début de la structure. Ce pointeur est de type commit, version (selon le type de la chaine suivante qu'il pointe).
+En terme de généricité, il y a des listes doublement chainées partout dans le noyau mais on ne pourrait pas avoir un code lisse. Pourquoi ? Parce que le type de next est la structure de commit (ou celle de l'élément suivant). L'astuce du noyau est d'avoir une structure qu'on va appeler list_hand, qui contient un champ next et un champ prev. Puis, de la même façon que la structure version est inclue dans la structure commit, on va inclure le list_hand dans la structure qu'on veut limiter. On aura donc une structure comme dans le {schéma list_hand}, où l'un de ses champs va être de type list_hand. Attention : ce champ n'est pas de type adresse de list_hand</p>
+<p>On a une macro nommée <strong>list_entry()</strong>, qui utilise des sous-macros. Cette macro permet de retrouver à partir d'une "boite" <strong>list_hand</strong> de retrouver la structure qui lui est associée. L'avantage de cette technique  (c'est comme si on faisait de l'objet en C), c'est d'avoir un code générique pour toutes les listes chaînées. Puis lorsqu'on a un list_hand, on peut récupérer grâce à <strong>list_entry()</strong> sa structure. C'est pareil si on a un kmodule ou une structure inode, puisqu'on a leur list_hand.
+Ainsi, on a des list_hand absolument partout dans le kernel (blocs, inodes...). Le noyau c'est en permanance des structures liées les unes aux autres dans les listes doublement chainées.</p>
+<p>Quelle est la différence entre <strong>list_foreach</strong> et <strong>list_foreach_entry</strong> ?</p>
+<p>Le list.h donné par le prof dans le sujet est à 99% le vrai list.h (insertions à la main de quelques dépendances).</p>
+<p>Exercice 4 : <strong>INIT_LIST_HEAD</strong>, <strong>list_add</strong>, <strong>list_del</strong>, <strong>list_for_each</strong> (macro), <strong>list_for_each_entry</strong> (macro)</p>
+<ul>
+<li>Mémo GDB :<ul>
+<li>Pour lancer notre programme, on exécute : <code>gdb notreProgramme</code>. Cela va lancer GDB calibré sur notre programme.</li>
+<li>Pour exécuter notre programme, on lance : <code>run</code></li>
+<li>Pour reprendre l'exécution du programme (après un breakpoint), fait <code>continue</code></li>
+<li>On peut positionner des breakpoints aux endroits dans le code qui nous intéresse : <code>break n° ligne/nom d'une fonction</code>. GDB s'interrompra lorsqu'il arrivera à leur niveau.</li>
+<li><code>info threads</code> donne des informations sur les threads en cours d'exécution</li>
+<li><code>monitor</code> sert à accéder plus ou moins à l'API de KGDB, donc grâce à cette commande on aura des informations spécifiques au noyau.</li>
+</ul>
+</li>
+</ul>
+<h2>TP2 (07/10/15)</h2>
+<ul>
+<li>Dans le noyau, une liste est toujours traitée de la même façon : c'est un <strong>list_head vide</strong>, qui n'est pas inclu dans une structure quelconque. Ainsi, une liste chainée est un <strong>list_head</strong> qui n'est pas inclu dans une structure. Qu'est-ce qu'une tête de liste ? C'est 1 exemplaire de <strong>list_head</strong> qui n'est pas dans une structure; c'est le point de départ ; il n'est pas inclu dans une liste.</li>
+<li>Que sera le test de la liste vide (offert par une macro) ? Ce sera de tester s'il pointe sur lui-même.</li>
+<li>On aura une liste qui contient tous les commit, et une autre qui contient que les majeurs. On aura donc en tout 2 <strong>list_head</strong> (qui ne sont pas dans leur structure respective) : il y en a un où lorsqu'on parcourera avec un foreach, on parcourera tous les commits (toutes les versions) ; l'autre où on ne parcourera que les versions majeures.<br>De plus, chaque élément dispose d'un pointeur <strong>major_parent</strong> qui permet de remonter dans la liste. Ce genre de pointeur existe partout.</li>
+<li>Le parent d'un majeur est lui-même.</li>
+<li>Macro boucle for : "fonction" qui prend du code en argument (une fonction classique ne peut pas le faire). Une technique pour utiliser une fonction classique en passant du code serait de faire avec un callback : créer une fonction et appeler un foreach qui est une fonction avec un callback dedans.</li>
+<li>L'option <strong>-E</strong> de <strong>gcc</strong> affiche dans un terminal le code généré après le pré-compilateur (c'est-à-dire après que les macros ont été remplacées). On verra donc le "vrai" code, celui qui sera vraiment compilé.</li>
+<li>Syntaxe noyau :<ul>
+<li>On ne met jamais d'espaces entre le nom d'une fonction et sa parenthèse ouvrante. On met par contre un espace entre un "if", "while", etc... et sa parenthèse.</li>
+<li>On met des tabulations en début de ligne, au lieu d'espaces</li>
+<li>Quand on fait par exemple i=2, la bonne syntaxe sera "i ESPACE = ESPACE 2"</li>
+</ul>
+</li>
+<li>Il existe un script, avant que l'on envoi notre patch, qui analysera la syntaxe et nous avertira des endroits non-conformes.</li>
+<li>On remarquera à l'exercice 8 qu'il y a un problème d'allocation mémoire, c'est une erreur dans le code fourni : un <strong>malloc()</strong> peut planter. Comment gérer proprement le <strong>malloc()</strong> qui plante ? Premier exemple :</li>
+</ul>
+<pre><code>    void* foo() {
+        ...
+        ...
+        *p = malloc(...);
+        ...
+        ...
+        *p2 = malloc(...);
+        if (p2 == NULL) {
+            return NULL;
+        }
+    }
+</code></pre>
+
+<blockquote>
+<p>On a typiquement une allocation de ressource (un <strong>malloc()</strong> par exemple) puis une autre un peu plus loin. Si cette dernière échoue, on fera proprement notre test. Quel est le problème avec cet exemple ? Le problème est qu'on a traité notre erreur (<code>if (p2 == NULL) {</code>) mais on n'a pas libéré la ressource qu'on avait alloué avant (<strong>p</strong>), ce qui va créer une fuite mémoire.<br>Une première solution serait de rajouter un <strong>free()</strong> dans le traitement d'erreur :</p>
+</blockquote>
+<pre><code>        if (p2 == NULL) {
+            free(p);
+            return NULL;
+        }
+
+</code></pre>
+
+<blockquote>
+<p>Cette solution marche, mais le problème est que si on répète ce schéma (avec les tests d'erreurs) :</p>
+</blockquote>
+<pre><code>    void* foo() {
+        ...
+        ...
+        *p = malloc(...);
+        ...
+        ...
+        *p2 = malloc(...);
+        if (p2 == NULL) {
+            free(p);
+            return NULL;
+        }
+        *p3 = ...
+        if (...) {
+            ...
+        }
+        ...
+        ...
+        if (...) {
+            free(p);
+            free(p2);
+            free(p3):
+            return NULL;
+        }
+    }
+</code></pre>
+
+<blockquote>
+<p>À la fin, on va arriver avec quelque chose où on devra faire autant de <strong>free()</strong> qu'il y a de ressources allouées avant de retourner notre erreur. Ce n'est donc pas un code évident. Pour faire ceci plus proprement d'un point de vue programmation, sachant que le problème énoncé ressemble aux exceptions (l'allocation échoue, on lance une exception, qui consiste à libérer les ressources allouées), on va utiliser les <strong>goto</strong>.<u>Note</u> : le traitement des exceptions en C se fait avec les <strong>goto</strong>. De façon générale, les <strong>goto</strong> sont considérés comme "sales" mais ils sont en revanche parfait en C pour tout ce qui est traitements d'erreur.<br>Ainsi notre code sera réécrit tel quel :</p>
+</blockquote>
+<pre><code>    *p = ...;
+    if (!p) {
+        goto out_err;
+    }
+    *p2 = ...;
+    if (!p2) {
+        goto out_p2;
+    }
+    *p3 = ...;
+    if (...) {
+        ...
+    }
+    return 0;
+
+    out_p3:
+        free(p2);
+    out_p2:
+        free(p);
+    out_err:
+        return -1;
+
+</code></pre>
+
+<p>On alloue une ressource, on teste notre erreur puis on fait, en cas d'erreur, un <code>goto out_err</code>. Tout en bas de notre fonction, on aura les labels. En cas d'erreur, on sautera initialement au label <strong>out_err</strong>. Si <strong>p2</strong> échoue, on va sauter au label <strong>out_p2</strong>, qui va libérer la ressource allouée précedemment (<strong>p</strong>) et renvoyer le code d'erreur. Pareil pour <strong>p3</strong>, dont le label <strong>out_p3</strong> va libérer <strong>p2</strong>, <strong>p</strong> et renvoyer le code d'erreur. On a donc au niveau des labels une exécution séquentielle, qui permet de dépiler (<strong>free()</strong>) à la fin ce qu'on a empilé (<strong>malloc()</strong>) au début. L'avantage est que toute la libération se fait en un seul endroit (alors qu'avant on devait systématiquement dupliquer la gestion d'exceptions).<br>Si toutes les allocations se sont bien déroulées, alors le <strong>return</strong> sera exécuté.</p>
+<h2>TP3 (14/10/15)</h2>
+<ul>
+<li>Il es tout à fait possible d'avoir un seul noyau installé dans une machine, et de l'utiliser avec plusieurs distributions.</li>
+<li>Kernel .../bzImage</li>
+<li>append init root=/dev/sda1</li>
+<li>initrd</li>
+<li>serial stdio</li>
+<li>(Exercice 4 question 1) Ne pas mettre l'option <strong>–no-absolute-filenames</strong>.</li>
+</ul>
+<h2>TP 4 (21/10/15)</h2>
+<ul>
+<li>Ce n'est pas à la compilation qu'on a besoin du code d'une librairie (du <strong>.so</strong>) mais à l'édition de lien, pour savoir où sont les adresses des symboles.<br><u>Rappel</u> : les symboles ne sont pas dans le <strong>.h</strong> (le header), le <strong>.h</strong> disant juste qu'il existe telle signature de fonction (une signature de fonction est un type), il n'indique pas où sont les fonctions dans le binaire.<br><u>Rappel</u> : un symbole est un nom, c'est l'adresse d'une fonction dans le code.</li>
+<li>À la 1ère question, on a 2 <strong>.c</strong> qu'on va compiler séparemment en <strong>.o</strong> (ceux-ci sont du code binaire correspondant à la version compilée des <strong>.c</strong>). Et à la fin, on a le linker qui va lier les différents objets <strong>.o</strong> pour créer le binaire.<br>Ce qu'on voudrait, c'est faire de <strong>???.c</strong> une bibliothèque pour qu'on puisse la compiler qu'une seule fois, la réutiliser, tout en étant très étroitement liée au binaire final. Donc au lieu de générer <strong>???.o</strong>, on va générer <strong>libfunc.so</strong>, qui sera une bibliothèque dynamique c'est-à-dire qui sera chargée dynamiquement au moment où on execute <strong>cron_func</strong>. Donc quand on va faire <strong>./cron_func</strong>, le noyau va être chargé de faire ce qu'on appelle la <em>liaison dynamique</em> (à l'opposé de l'édition de lien qui lie les objets entre eux au moment de la compilation [<em>liaison statique</em>]). Il existe un programme dans le système nommé <strong>ldd</strong> qui sera chargé, juste avant d'exécuter le <strong>main()</strong>, de charger les différentes bibliothèques nécessaires.</li>
+<li>Qu'est que c'est <strong>libfunc.so</strong> ? C'est presque pareil qu'un <strong>.o</strong> (c'est du binaire), c'est le code contenu dans <strong>???.c</strong> compilé en assembleur. La seule différence, c'est que ça a été fait pour pouvoir être chargé dynamiquement. Car dans une compilation avec une liaison statique, le linkeur sait exactement où sont les différents symboles dans le <strong>.o</strong> (<strong>func()</strong> dans cet exercice). Quand on exécute <strong>cron_func</strong>, on sait où se trouve <strong>func()</strong> dans la mémoire (car le binaire contient tout). Mais si on procède avec une bibliothèque, on a bien les fonction présentes dans le <strong>cron_func.c</strong> (on sait où elles se trouvent) mais on ne sait pas par contre où est la fonction <strong>func()</strong> (parce qu'elle est dans une bibliothèque à part). Ainsi le rôle du programme <strong>ldd</strong> sera de faire en sorte au moment où on exécute <strong>cron_func</strong> d'indiquer où sont placés les différents symboles (en mémoire).<br>Cependant pour faire cela, il va falloir faire une chose particulière quand on compile le <strong>.o</strong> (de la fonction <strong>func()</strong>) : utiliser l'option de compilation <strong>-fPIC</strong> (<em>Position Independant Code</em>) de <strong>gcc</strong>. Cette option demande à <strong>gcc</strong> de générer du code (donc les fonctions) de sorte qu'elles soient placées n'importe où en mémoire. Il y aura donc dans le <strong>.so</strong> des métadonnées supplémentaires qui permettent de savoir où sont ces différents symboles (de fonctions, de variables globales, etc...).<br><u>Note</u> : l'option <strong>-fPIC</strong> est une option de compilation, pas de liaison. On mélange souvent les choses. Quand on fait <strong>gcc -c ... -o fichier.o</strong>, on fait de la compilation ; quand on fait <strong>gcc -o notreBinaire pleinsDeFichiers.o"</strong>, cela appelle l'outil de liaison de <strong>gcc</strong>.<br>Il y a une seconde étape après l'option <strong>-fPIC</strong>, qui va consister à créer la bibliothèque dynamique (ce sera également fait par l'outil de liaison de <strong>gcc</strong>) ; c'est les mêmes étapes que si on créait un binaire séparé. Dans ce cas là, ce qu'on veut créer, c'est bien <strong>libfunc.so</strong>. Il faut donc une option particulière au linkeur : <strong>-shared</strong> qui indique au linkeur qu'on veut faire une bibliothèque partagée.<br><u>Note</u> : un fichier <strong>.so</strong> peut être constitué de pleins de fichiers <strong>.o</strong>, il n'est pas forcément constitué que d'1 fichier <strong>.o</strong>.<br>Du coup, dans le cadre de cet excercice, on n'aura pas besoin de recompiler <strong>cron_func.o</strong> mais on devra refaire les tables de liaisons, car on ne va plus lier <strong>cron_func.o</strong> avec <strong>nothing.o</strong>. On devra alors indiquer à <strong>gcc</strong> que <strong>cron_func.o</strong> a besoin de la <strong>libfunc</strong>, grâce à l'option <strong>-L</strong> (suivie de la <em>libfunc</em>).<br><u>Attention</u> : Quand on exécute notre binaire, <strong>ldd</strong> va chercher <strong>libfunc.so</strong>. Sauf que par défaut dans tous les Unix, il ne regarde pas dans le répertoire courant (alors que <strong>libfunc</strong> y est). Pour cela il existe une variable d'environnement nommée <strong>LD_LIBRARY_PATH</strong>, qui permet de rajouter des chemins vers des répertoires qui contiennent des bibliothèques à charger. En faisant <strong>LD_LIBRARY_PATH=.</strong>, on dit que notre variable d'environnement contient le chemin <strong>.</strong>. Et au moment où on va charger le programme en mémoire, <strong>ldd</strong> va lire cette variable d'environnement et comprendre que le répertoire courant contient aussi des librairies et va donc essayer de voir s'il y trouve la <strong>libfunc.so</strong>.</li>
+</ul>
+<blockquote>
+<p><code>LD_LIBRARY_PATH=. ./cron_func</code></p>
+</blockquote>
+<ul>
+<li><u>Astuce</u> : le linkeur de <strong>gcc</strong> s'appelle <strong>ld</strong>. Donc si on fait <strong>man ld</strong>, on aura toutes les options qui concernent la partie linkeur.</li>
+<li>Le linkeur dynamique s'appelle <strong>ld.so</strong> (ce n'est pas une bibliothèque malgré son nom), c'est lui qui va lire les variables d'environnement <strong>LD_*</strong> et qui va essayer de faire la liaison entre un binaire et une bibliothèque dynamique. On pourra constater dans son manuel qu'on peut définir une variable d'environnement nommée <strong>LD_PRELOAD</strong> : on peut avoir plusieurs répertoires qui contiennent des bibliothèques (<strong>/usr/lib</strong>, <strong>/lib</strong>, <strong>/usr/local/lib/</strong>...). Tout cela sera dans <strong>LD_LIBRARY_PATH</strong>. Quand on exécute un programme, on peut en fait avoir plusieurs version d'un même programme (une dans <strong>/usr/bin</strong>, une dans <strong>/bin</strong>, une dans <strong>/usr/local/bin</strong>). Le système va regarder la variable d'environnement <strong>PATH</strong> et exécuter la première version qu'il trouve. Donc si on exécute par exemple le programme <strong>echo</strong>, s'il est à la fois dans <strong>/bin</strong> et dans <strong>/usr/bin</strong>, il va exécuter celui qui est dans <strong>/bin</strong>. C'est pareil pour les bibliothèques, donc si le programme a besoin de <strong>libfunc.so</strong> et qu'il est dans tous ces répertoires, il va prendre la première qu'il trouve. La variable d'environnement <strong>LD_PRELOAD</strong> permet d'indiquer directement une bibliothèque, donc son principe est d'indiquer de charger une bibliothèque précise, cela le force à charger une version particulière.</li>
+</ul>
+<blockquote>
+<p><code>LD_PRELOAD=libfunc.so ./cron_func</code></p>
+<p>Par exemple, dans la <strong>libc</strong> on a la fonction <strong>read()</strong>. Qu'est-ce que l'on pourrait faire avec <strong>LD_PRELOAD</strong> ? On pourrait très bien coder notre propre <strong>read()</strong> (c'est le sujet de la question 3) et faire ce que l'on souhaite dedans. En résumé, on peut <strong>surcharger</strong> avec <strong>LD_PRELOAD</strong> les fonctions du système. C'est un moyen de faire à ce qui ressemble à du piratage, puisqu'on peut faire des keyloggers, le principe étant de détourner <strong>read()</strong> pour enregistrer tout ce qui est tapé au clavier (y compris les mots de passe par exemple) puis d'exécuter la fonction d'origine pour que l'utilisateur n'y voit que du feu.</p>
+<p><code>LD_PRELOAD=libread.so ./cron_func</code></p>
+</blockquote>
+<ul>
+<li>Dans le dernier exercice, on nous demande de manipuler <strong>dlopen()</strong>. Le principe est que tout ce que fait <strong>ld.so</strong>, c'est d'ouvrir un fichier <strong>.so</strong> et trouver l'adresse du symbole dont on a besoin. <strong>dlopen()</strong> et <strong>dlsym()</strong> sont des appels systèmes qui permettent d'ouvrir une bibliothèque partagée, un programme ou un <strong>.o</strong> et de chercher un symbole. Typiquement on va pouvoir faire <strong>dlopen()</strong> de <strong>libtoto.so</strong> :</li>
+</ul>
+<pre><code>    h = dlopen(&quot;libtoto.so&quot;)
+    f = dlsym(&quot;toto&quot;, h)
+</code></pre>
+
+<blockquote>
+<p>Ce qu'on va faire avec <strong>dlopen()</strong>/<strong>dlsym()</strong>, c'est ouvrir la <strong>libtoto</strong>, y chercher le symbole <strong>toto</strong> (notre fonction) et renvoyer l'adresse de cette fonction. Donc ici, <strong>f</strong> sera un pointeur de fonction. Ce qu'on nous demande dans la question 4 sera de modifier avec les touches "I" et "R" pour pouvoir changer à la volée la fonction <strong>func()</strong>. On pourra donc avoir pleins de librairies qui font un traitement différent. Quand on tape au clavier le caractère "I", on pourra demander à charger notre fonction qui est dans <strong>libfunc</strong> ; quand on tape "R", cela chargera la fonction <strong>func()</strong> d'origine.</p>
+</blockquote>
+<ul>
+<li>Le but de l'exercice ??? est de comprendre qu'on peut faire des symboles à la volée et exécuter du code à la volée (<strong>dlopen()</strong> et <strong>dlsym()</strong>).</li>
+<li>Normalement, quand on utilise <strong>dlsym()</strong>, on doit faire avant <strong>dlopen()</strong> (dont le premier paramètre correspond au fichier <strong>.so</strong> dans lequel on veut chercher le symbole. <strong>RTLD_NEXT</strong> est un paramètre particulier qui dit à <strong>dlsym()</strong> de nous charger le prochain symbole <strong>read</strong> qu'il trouve. Ainsi, quand on fait cette commande, le premier symbole <strong>read</strong> est le notre, c'est celui qui est dans <strong>libread</strong>. Si on regarde le fichier <strong>myread.c</strong>, il y a une fonction <strong>read()</strong> (qui sera donc le premier symbole car on a indiqué à <strong>ld.so</strong> via <strong>LD_PRELOAD</strong> qu'il doit charger en premier <strong>libread</strong>). Logiquement, le second symbole <strong>read</strong> sera celui de la <strong>libc</strong>. Ainsi, le paramètre <strong>RTLD_NEXT</strong> signifie qu'au lieu de charger dans le fichier donné en paramètre, il doit charger le prochain qu'il trouve (le prochain qu'il trouvera étant le vrai <strong>read()</strong>, celui de la <strong>libc</strong>). Le principe du code qu'on nous donne est de redéfinir la fonction <strong>read()</strong> (elle s'appelle <strong>myread()</strong>). Par exemple, on pourrait y faire un <strong>print()</strong> pour dire "j'ai détourné l'appel système read", on récupère l'adresse de l'ancien <strong>read()</strong>, puis on appelle l'ancien <strong>read()</strong> (on va l'appeler <strong>oldread()</strong>) avec les paramètres qui ont été donnés à <strong>myread()</strong>. En résumé, le principe est : on détourne, on montre qu'on a détourné, on récupère l'adresse de la version originale, et on exécute la version originale.</li>
+</ul>
+<pre><code>    int my_read(arg1, arg2) {
+        print(&quot;toto&quot;);
+        old = dlsym(RTLD_NEXT, &quot;read&quot;);
+        return old(arg1, arg2);
+    }
+</code></pre>
+
+<blockquote>
+<p>Que peut-on faire avec ces appels systèmes (en oubliant les rootkits et cie) ? Les plugins, car quand on charge un plugin par exemple sur Gedit, un plugin est en fait un <strong>.so</strong> (sous Linux, <strong>.dll</strong> sous Windows). Ainsi quand on parle d'ouvrir le plugin "toto", cela va consister à ouvrir <strong>toto.so</strong> avec <strong>dlopen()</strong>, et cela va appeler un symbole particulier (il y a une spécification, par exemple Gedit a pu spécifier que le symbole sera <strong>gedit_init</strong>). Que retrouve-t-on par rapport aux modules du noyau ? Quelles sont les deux fonctions qui sont exécutées dans un module ? <strong>init()</strong> et <strong>exit()</strong>. Ainsi les <strong>.ko</strong> reprennent exactement le même principe : quand on charge un <strong>.ko</strong>, le noyau cherche uniquement <strong>module_init</strong> et <strong>module_exit</strong>. C'est une spécification du noyau : un module noyau a deux fonctions, <strong>module_init()</strong> et <strong>module_exit()</strong>. Donc quant on charge un module, le noyau va faire dessus un <strong>dlopen()</strong> ou un <strong>open()</strong> quelconque, va chercher le symbole <strong>module_init()</strong> puis va l'exécuter. Idem pour le déchargement d'un module : il va chercher le symbole <strong>module_exit</strong> et va l'exécuter.<br><u>Astuce</u> : si jamais on fait des projets (dans le noyau ou en espace utilisateur) et qu'on nous demande de faire un système de plugin, on devra surement utiliser le principe présenté plus haut.<br>Si on a compris le principe des <strong>dlopen()</strong>/<strong>dlsym()</strong>, etc... alors on aura compris comment ça marche dans le noyau, c'est le même principe.
+* Notre <strong>.ko</strong> sera compilé pour un noyau particulier, ce n'est pas forcément pour celui qui s'exécute sur la machine. Donc si on fait juste <strong>make</strong>, il va aller chercher la version du noyau qui est en train de tourner. D'ailleurs si on regarde dans le <strong>Makefile</strong>, on a un endroit où il y a un chemin ressemble à /???/module/ suivi par la commande <strong>uname -r</strong> (qui retourne la version du noyau qui est en train de s'exécuter).<br><u>Attention</u> : si on compile le module sur la machine hôte et qu'on le transfère sur la machine virtuelle, il ne marchera pas parce que la version du noyau de la VM n'est pas la même que celle du noyau de la machine hôte. Dans l'exercice 5, on devra faire des modifications dans le noyau (ce n'est pas seulement faire des modules). Ainsi, ce sera particulièrement important de compiler pour le noyau modifié (il sera dans <strong>/tmp/linux-4.2.3/</strong>), on peut demander au <strong>Makefile</strong> de compiler le module pour le noyau à modifier. Comment peut-on le faire sans modifier le <strong>Makefile</strong> ? On a dans le <strong>Makefile</strong> la ligne suivante : </p>
+</blockquote>
+<pre><code>    KERNELDIR ?= /lib/modules/$(uname -r)
+</code></pre>
+
+<blockquote>
+<p>Le <strong>?=</strong> signifie que si la variable d'environnement <strong>KERNELDIR</strong> n'est pas définie, alors on la définie au chemin spécifié (<strong>/lib/modules/$(uname -r)</strong>). Ainsi, on peut soit faire un <strong>export</strong> de <strong>KERNELDIR</strong> soit définir <strong>KERNELDIR</strong> (avec le chemin vers un noyau Linux) et immédiatement après faire <strong>make</strong> :</p>
+</blockquote>
+<pre><code>    KERNELDIR=/tmp/linux-4.2.3 make
+</code></pre>
+
+<ul>
+<li>Dans le noyau, il existe la fonction <strong>printk()</strong> pour afficher les erreurs. Son premier argument est un préfixe (par exemple <strong>KERN_ERR</strong>), les arguments suivants étant le message (comme le <strong>printf()</strong>). Comme cette notation est un peu lourde, un raccourci a été créé : <strong>pr_XXX()</strong> (<strong>pr_err()</strong>, <strong>pr_info()</strong>, <strong>pr_debug()</strong>, <strong>pr_alert()</strong>, <strong>pr_warn()</strong>). On a du coup juste la chaîne et le format. Cela rend le code plus lisible.</li>
+<li>Comment est représenté un module une fois chargé en mémoire ? Il faut bien que le noyau stocke des informations sur le module, pour cela il existe une structure <strong>module</strong>. Dans le code de notre module, quand on fait des <strong>module_param</strong>, <strong>module_name</strong>, <strong>module_licence</strong>..., ce sera à terme des champs de cette structure <strong>module</strong> qui seront remplis. Comment les modules sont reliés entre eux ? Par une liste doublement chainée, tous les modules dans le noyau sont dans une liste doublement chainée. Donc quand on fait <strong>lsmod</strong>, il se contente de parcourir naïvement cette liste.<br>Quand on nous demande de cacher un module de <strong>lsmod</strong>, quelle est la solution la plus naïve ? Enlever sa structure <strong>module</strong> de la liste. Comment accéder à la structure <strong>module</strong> du module souhaité ? Il y a une variable dans <strong>module.h</strong> nommée <strong>__this_module</strong>, qui est en fait la structure <strong>module</strong> de notre module (ce n'est pas un pointeur, c'est la structure elle-même). <u>Attention</u> : ces explications concernent la vue abstraite. Car en vrai, dans le noyau, pour tous les objets qu'on veut représenter dans le <strong>/sys</strong> (<u>rappel</u> : on a notre module dans ce répertoire)... La structure <strong>module</strong> n'a pas directement un <strong>list_head</strong>, car dans le noyau les objets qui sont représentés à l'extérieur (donc tout ce qui sera dans <strong>/sys</strong>, ce n'est pas que pour les modules, il y a plein d'informations) sont stockés dans <strong>/sys</strong> sous la forme de <strong>kobjects</strong>. Une structure <strong>kobject</strong> est juste un objet qui contient les informations qui vont servir à les représenter dans <strong>/sys</strong>. Ainsi, la structure <strong>module</strong> embarque un <strong>kobject</strong> (il ne pointe pas vers un <strong>kobject</strong>, il a directement dedans un <strong>object</strong>). Cette structure <strong>kobject</strong> est ce qui va représenter le module au sein du <strong>/sys</strong>.<br>Donc si on enlève de la liste le module, cela le cachera juste de <strong>lsmod</strong> mais il sera toujours présent dans <strong>/sys</strong>. Les <strong>kobjects</strong> sont liés entre eux. Donc si on veut masquer notre module du <strong>/sys</strong>, on supprime le <strong>kobject</strong> de la liste. Cependant il y a une subtilité : dans les modules, les <strong>kobjects</strong> ne sont pas directement dedans. Il y a une structure intermédiaire qui s'appelle <strong>kmod???</strong>* (46m15), qui embarque un <strong>kobject</strong>.<br>Ainsi, si on regarde le contenu de la structure <strong>module</strong>, on va trouver un champ <strong>.kmod</strong> ; et dans la structure <strong>kmod</strong> qui correspond, on va trouver un <strong>.kobject</strong>. Pour se retirer de la liste des modules, on devra donc se retirer de la liste des <strong>module</strong> et des <strong>kobject</strong>. En revanche, si on procède mal au masquage du module, on peut éventuellement casser une des listes. Dans ce cas là, quand on va faire <strong>lsmod</strong> ou <strong>rmmod</strong>, ça va crasher (c'est pour ça que c'est important d'expérimenter dans une VM au lieu de la machine physique).<br><u>Rappel</u> : les <strong>kobject</strong> sont chaînés entre eux, mais les <strong>kobject</strong> ne sont pas forcément des modules.</li>
+<li>
+<p>On ne peut pas se contenter de supprimer le <strong>kobject</strong> de la liste car sinon on aurait d'autres problèmes (le <strong>kobject</strong> ayant des compteurs de référence, donc si quelqu'un s'en sert au moment de la suppression, cela peut causer des ennuis). Il y a pour cela une fonction nommée <strong>kobject_del()</strong>, dont l'idée est de vouloir supprimer un <strong>kobject</strong> (il décrémente le compteur de référence, s'il tombe à 0 alors supprime sinon il ne supprime pas). Il faut absolument s'en servir sinon on aura soit de la fuite mémoire soit un problème quelconque (car quelqu'un s'en sert au moment où on veut supprimer <strong>kobject</strong>).</p>
+</li>
+<li>
+<p><strong>ld.so</strong> est le linkeur dynamique, mais qui est le linkeur "tout cours" ?
+Option <strong>-Wl</strong> de <strong>gcc</strong> ??? L'option <strong>-Wl</strong> sert à passer des options au <em>linker</em> de <strong>gcc</strong> (elle a donc toujours un argument). La syntaxe de cette option est <strong>-Wl xxx,yyy</strong> (<strong>xxx</strong> et <strong>yyy</strong> étant les options du <em>linker</em>).<br><u>Rappel</u> : <em>gcc</em> est derrière deux choses, le compilateur et le linkeur. On peut faire les deux étapes en une fois (en une grande commande), on va faire <strong>-Wl</strong> pour passer les options au <em>linker</em>.</p>
+</li>
+</ul>
+<h2>TP 5</h2>
+<ul>
+<li>
+<p>Par quel moyen se connecte-t-on à la machine virtuelle avec GDB ? Sur un port série, qui est dans la VM (si on regarde les options de démarrage de la VM, le port série est <span style="color:red;">5???ktty0</span>). Dans le cas de GDB, à quoi correspond le port série ? À un port TCP, donc le port série sur lequel est mappé KGDB dans le noyau correspond au port 1234 de notre machine hôte. Ainsi dans GDB (lancé sur une machine quelconque), on exécute la commande <code>target remote localhost:1234</code> (une fois que la VM a plantée).</p>
+</li>
+<li>
+<p>Quand on lance QEMU, on doit rajouter l'option <strong>kgdbwait</strong> : elle dit au noyau qu'au moment de démarrer, on fait une pause et on attend qu'il y ait un déboggeur qui se connecte. Si on n'utilise pas cette option, il faudra attendre que la VM crashe pour pouvoir s'y connecter avec la VM.</p>
+</li>
+<li>
+<p>Quel programme debugge-t-on du point de vue de la machine hôte (car GDB doit savoir le code du programme qu'il debugge) ? On debugge sur <strong>vmlinuz</strong> (sachant que quand on démarre l'image/la VM, on utilise <strong>bzImage</strong>, qui est le binaire de notre noyau mais compressé ; le vrai binaire est <strong>vmlinuz</strong>).</p>
+</li>
+<li>
+<p>Dans l'exercice 3, la tâche est bloquée en non-interruptible, ce qui signifie qu'on ne peut rien faire avec (même pas lui envoyer un signal). Dans la configuration du noyau donnée par les profs, il y a une limite à 30 secondes. Au-dela de 30 secondes la tâche sera quand même bloquée, mais le noyau affichera un message prévenant qu'il y a un problème ; ce message est purement informatif.<br>Si on configure la limite à 0, cela consiste à la désactiver. Si on la configure à 3600 secondes, cela signifie que quand une tâche bloquée depuis 1 heure alors ce sera considéré comme pas normal.
+<span style="color:red;"><strong>Écouter 811_1072 02m00</strong></span></p>
+</li>
+<li>
+<p>Quelle est la différence entre un pthread et un kthread ? Un pthread est un thread POSIX tandis qu'un kthread est un thread noyau. Les pthreads sont une bibliothèque utilisateur, alors que les kthreads sont une API du noyau pour faire des threads.<br><u>Attention</u> : les pthreads se reposent sur des appels systèmes qui, derrière, vont générer des threads. kthread est un type de thread, mais c'est des threads du noyau.<br>On parlera dès fois de processus noyau, qui sont dans le cas de Linux des kthreads.</p>
+</li>
+<li>
+<p>Pour la question 6 de l'exercice 3, on peut charger un module supplémentaire (par exemple HelloWorld) pour avoir plus d'informations.</p>
+</li>
+<li>
+<p>L'exercice 5 consiste à du vrai débuggage, on va utiliser les techniques apprises pour trouver des vrais bugs. L'objectif de cet exercice n'est pas de trouver des bugs tout seul (en regardant le code) mais d'en trouver via des moyens fournis par le noyau.</p>
+</li>
+<li>
+<p>Question 7 exercice 3 : dans la partie correction du code du module, c'est corriger le problème en modifiant la façon dont on s'endort.</p>
+</li>
+<li>
+<p>Quand on fait <strong>make nconfig</strong>, il suffit de taper F8 pour chercher des symboles/mots-clés.</p>
+</li>
+<li>
+<p>Quand on utilise GDB sur un noyau, c'est important d'avoir une copie locale de ce noyau (<strong>vmlinuz</strong>) que GDB utilisera pour obtenir des informations. C'est également important d'avoir la même version pour le noyau à debugger et l'exécutable <strong>vmlinuz</strong> qu'on donne à GDB (sinon c'est comme si on debuggait <em>Firefox</em> avec le code de <em>Eclipse</em>). De plus, si on a compilé deux fois différemment le noyau, alors il se peut que les symboles ne soient pas aux mêmes adresses, donc GDB affichera des informations erronées.<br>On peut faire du debuggage de noyau à distance, via le réseau. La seule condition habituelle est qu'on doit avoir accès au <strong>vmlinuz</strong> associé.</p>
+</li>
+<li>
+<p>La fonction <strong>prdebug()</strong> appelle <strong>printk()</strong>.</p>
+</li>
+</ul>
+<h1>TP 6</h1>
+<ul>
+<li>Exercice 1, question 2 : Les champs <strong>utime</strong> et <strong>stime</strong> de la structure <strong>task_struct</strong></li>
+<li>Exercice 2, question 3 : kthread -&gt; kcpustat</li>
+<li>Exercice 3 : Documentation/filesystem/sysfs.txt</li>
+<li>
+<p>Exercice 5 : ../ioctl/ioctl_numbers.txt</p>
+</li>
+<li>
+<p>Le but de la question 1 est de nous montrer que le noyau ne fonctionne pas exactement comme on nous l'a appris en M1.</p>
+</li>
+<li>
+<p>À la base, un PID est un idenfiant de processus, un entier. Pourquoi a-t-on besoin d'une structure ? Pourquoi faire des choses compliquées dans le noyau juste pour un PID ? En M1, on nous disais qu'il y avait une table des processus, où il y avait dedans des structures <strong>task_struct</strong> (qui sont préallouées). On nous disais aussi qu'en gros, le numéro du PID correspondait au numéro de la table. Le problème est que si on veut monitorer le processus 3 (on fait dans notre programme <strong>pid p = 3</strong>, puis on travaille avec le processus 3), et qu'entretemps la tâche 3 meurt, qu'un autre processus est créé et que ce nouveau processus possède le PID 3 (sachant que quand on est à la fin de la table, on retourne au début), comment savor que le propriétaire du PID n°3 a changé ? On ne peut pas. Donc dans le noyau, cela marche un peu différement (mais l'idée est la même) : à la place d'avoir un entier (le PID), on va avoir une structure dédiée où on aura le numéro de PID + d'autres champs et qui va pointer (pointeur) vers la tâche correspondante.<br>Donc si on veut monitorer par exemple une tâche, on va avoir une variable structure <strong>pid</strong>  (qui va pointer une des structures <strong>pid</strong> de la table). Et si jamais la tâche meurt, on aura toujours notre structure <strong>pid</strong>, mais le lien vers la tâche sera cassé. Si on créé une tâche de PID 3, alors on aura un nouvel objet en mémoire/une nouvelle structure <strong>pid</strong> de PID 3 qui va pointer vers la nouvelle tâche. On aura un doublon (la structure <strong>pid</strong> de l'ancienne tâche et la structure de la nouvelle), mais cela permet de résoudre le problème énoncé plus haut.<br>La fonction <strong>pid_alive()</strong> permet de savoir la structure <strong>pid</strong> donnée en paramètre correspond à une tâche encore en vie.<br>Au lieu d'avoir une table de processus, on aura une table de hachage, qui contiendra les structures <strong>pid</strong> des tâches en cours d'exécution.<br>Il y a la variable <strong>count</strong> dans la structure <strong>pid</strong> (de type <strong>atomic_t</strong>) : c'est un compteur de référence. Quand on récupère une structure <strong>pid</strong>, le noyau va incrémenter le compteur de cette structure. Quand on n'en veut plus, on fait la fonction <strong>push_pid()</strong>.<br>Une fois qu'on a le PID, comment récupère-t-on la tâche qui correspond ? Il y a dans la structure <strong>pid</strong> un champ nommé <strong>task</strong>, qui est en fait une petite table de hachage, car il y a différentes situations où plusieurs tâches peuvent partager le même PID. Il existe une fonction <strong>get_pid_task()</strong>, qui retourne (pointeur) la table (structure <strong>task</strong>) qui correspond au PID donné en paramètre. Il existe au niveau d'une tâche (structure <strong>task</strong>) une autre structure qui représente le PID : c'est une structure nommée <strong>pid_link()</strong> qui va pointer vers le PID qui correspond dans la structure <strong>pid</strong>. Donc une fois qu'on récupère un objet de type <strong>pid_link</strong>, on peut remonter au début pour avoir la tâche qui correspond.<br>La fonction <strong>get_pid_task()</strong> prend deux paramètres : le premier sera la structure <strong>pid</strong>, le deuxième sera un type de PID.<br>Dans la <strong>task_struct</strong>, on a deux champs : <strong>stime</strong> et <strong>utime</strong>. À quoi correspondent-ils ? <strong>stime</strong> est le temps CPU que passe une tâche en mode noyau (appel système par exemple), <strong>utime</strong> est le temps CPU qu'elle passe à s'exécuter en mode utilisateur. Quelle est leur unité de temps ? En tick, la durée d'un tick étant égale à la macro <strong>HZ</strong>. Pour le TP, ne pas s'embêter à afficher en seconde, le faire en ticks (mais essayer pour le challenge de le faire en secondes).</p>
+</li>
+<li><u>Attention</u> : tout le TP de la semaine prochaine va se baser sur l'exercice 2. Il doit donc marcher et être propre.</li>
+<li>Envoyer au prof les <em>.c, </em>.h et le Makefile, avant Mercredi 9h. On peut mettre dans le message du mail ce qu'on n'a pas compris, ce qu'on a du mal...</li>
+<li>Les répertoires sont les <strong>kobject</strong>. Un fichier est un <strong>kobj_attribute</strong>. Le sysfs est une arborescence de <strong>kobject</strong>. Quand on nous parle de la structure <strong>attribute</strong>, il faut la voir comme une classe abstraite (personne ne s'en sert tel quel dans le noyau), sachant qu'il existe plein de différents dypes d'attributs. Qu'est-ce qui caractérise un <strong>kobject_attribute</strong> ? Il a, en plus d'un attribut, deux fonctions : <strong>show(kobject, kobj_attribute, buf)</strong> et <strong>store(kobject, kobj_attribute, buf, count)</strong>. À quoi correspondent ces deux fonctions ? En simplifiant, un attribut est un nom associé à des droits. Par exemple, <strong>module_param</strong> est un attribut (où on a dedans un nom, des droits et d'autres champs). La fonction <strong>show()</strong> sera la fonction appelée lorsqu'on va faire un <strong>read()</strong> sur le fichier. Quand un programme dans l'espace utilisateur va faire un <strong>open()</strong> puis un <strong>read()</strong>, dans le noyau l'appel-système <strong>read()</strong> va indirectement appeler notre fonction <strong>show()</strong>, qui va montrer ce qu'il y a dans le fichier. Ce fichier est un faux-fichier, il n'existe pas et il n'y a rien en réalité dedans ; son "contenu" est en fait généré dynamiquement par l'autre fonction (<strong>store()</strong>).<br>Que prend en paramètre la fonction <strong>store()</strong> ? Le premier argument est un <strong>kobject</strong>, le second est un <strong>kobj_attribute</strong>, le troisième est un buffer. Que représente ici le <strong>kobject</strong> ? Le répertoire parent du fichier, ici on déclare le kernel (c'est-à-dire le répertoire <strong>/sys/kernel/</strong>, puisqu'un <strong>kobject</strong> est un répertoire). Le <strong>kobj_attribute</strong> correspond à l'attribut qu'on a créé. Est-ce que le tampon transmit au noyau via le troisième paramètre est vraiment le tampon passé par l'utilisateur ? Non, car quand on fait <strong>read()</strong> (qui appelera indirectement <strong>show()</strong>, <strong>write()</strong> appelera indirectement <strong>store()</strong>) on utilise un appel-système ; dans le noyau, on ne manipule pas directement les adresses d'un processus, parce que c'est dangereux (on ne sait pas vraiment ce qu'il y a dedans) et en plus ce n'est pas le même espace d'adressage. Ainsi ce qu'il va se passer, c'est qu'avant le système appelle notre fonction <strong>store()</strong>, il va créer un tampon temporaire et va copier dedans le tampon utilisateur. Quelle taille fait ce nouveau tampon ? On considère dans <em>sysfs</em> que tous les fichiers font la taille d'une page (c'est-à-dire <strong>PAGESIZE</strong>). On sait donc que le tampon qu'on reçoit fait une taille égale à <strong>PAGESIZE</strong>.<br><strong>show()</strong> renvoi un <strong>ssize_t</strong> (c'est-à-dire le nombre d'octets qui ont été lus), il a la même sémantique que l'appel-système <strong>read()</strong>. <u>Note</u> : <strong>size_t</strong> signifie <em>non-signé</em>, <strong>ssize_t</strong> est pour envoyer des valeurs négatives (codes d'erreurs).<br>Dans <strong>store()</strong>, on va lire le buffer et faire le traitement que l'on souhaite faire.<br><span style="color:red;">???Pourquoi ici il a une taille, et pas là???</span> ? L'utilisateur écrit ce qu'il veut, et on sait que le tampon ne dépassera pas <strong>PAGESIZE</strong> donc on ne va pas lire au-delà de ce qu'il a écrit. On sait donc qu'on va lire au maximum <strong>SIZE</strong> octets. C'est pareil pour la valeur de retour (on renvoi le nombre d'octets qu'on a traité).</li>
+<li><strong>proc/</strong> et <strong>sys/</strong> ont un point commun : les deux sont la représentation de quelque chose en mémoire. <strong>/proc</strong> est un système de fichiers virtuel pour faire apparaitre des données du noyau relatives aux processus. Comme <strong>/sys</strong>, <strong>/proc</strong> est un moyen pour accéder depuis l'espace utilisateur aux données du noyau.</li>
+<li>
+<p>À quoi sert <strong>ioctl()</strong> ?</p>
+<ul>
+<li>
+<p>Quand on veut communiquer avec certains périphériques, par exemple un lecteur CD, il faut envoyer une commande particulière au pilote de périphérique. Le problème est qu'on a un nombre d'appels systèmes limité, on ne peut pas définir autant d'appels systèmes que d'opérations pour tous les périphériques existants.</p>
+</li>
+<li>
+<p>Pour cela, un appel-système a été créé, <strong>ioctl(fd, cmd, arg)</strong>, qui est en quelque sorte paramétrable, l'idée étant un peu de pouvoir faire des sous-appels systèmes spécifiques pour chaque périphérique. Il prend en paramètre un descripteur de fichier, une commande et un paramètre. Cet appel-système va agir sur un périphérique de notre système.</p>
+</li>
+<li>
+<p>Pourquoi utilise-t-on un descripteur de fichier pour représenter un périphérique ? Sous Unix, tout est fichier, y compris les périphériques. Il existe les périphériques caractères (accès par octet) et les périphériques blocs (disques durs ; tous les accès se font par blocs) que l'on retrouve dans <strong>/dev</strong>. Dedans se trouve typiquement nos disques durs avec leurs partitions sous forme de fichiers spéciaux. Ce ne sont en réalité pas des fichiers, c'est juste une vue pour montrer les périphériques du système. Ainsi, si on veut communiquer avec <strong>/dev/sda</strong> (le disque dur), on va faire <strong>ioctl()</strong> sur ce fichier (après avoir fait <strong>open()</strong>).</p>
+</li>
+<li>
+<p>Un fichier, c'est des <strong>f_ops</strong>. Dans le noyau, pour chaque inode (<strong>/dev/sda</strong> est un inode, mais ce n'est pas un inode disque), on aura dedans un <strong>f_ops</strong>. Qu'il y a t-il par exemple dans les <strong>f_ops</strong> ? Il y a <strong>read</strong> (c'est un pointeur de fonction qui va s'exécuter au moment du read), il y a <strong>write</strong> et <strong>unlock_ioclt(struct file*, cmd, arg)</strong> (historiquement il y avait <strong>ioctl</strong> mais cela a été remplacé par <strong>unlock_ioctl</strong> car avant <strong>ioctl</strong> était exécuté avec le verrou global du noyau [tout le système était bloqué durant l'exécution de <strong>ioctl</strong>] ; l'autre version <strong>unlock_ioctl</strong> s'exécute sans <em>lock</em>). Ainsi quand on va faire l'appel-système <strong>ioctl()</strong>, on va exécuter au final le <strong>unlock_ioctl</strong> correspondant à notre fichier. Toutes ces explications concernent l'espace utilisateur.</p>
+</li>
+<li>
+<p>Dans le noyau, un <strong>ioctl()</strong> s'exécute sur un périphérique. Comment peut-on créer un périphérique ? On peut dire que le module est un pilote de périphérique (c'est-à-dire un driver). Dans l'espace utilisateur, il y a une commande nommée <strong>mknod</strong>. Celle-ci sert à créer des fichiers spéciaux (tels que par exemple les fichiers de type FIFO). <strong>mknod</strong> prend comme premier paramètre un type ("f" pour <em>FIFO</em>, "c" pour <em>character</em> [on s'y intéresse dans ce TP] et "b" pour <em>block</em>) et comme second paramètre un nom/un chemin. Mais qu'est-ce qui identifie un périphérique ? À tout périphérique correspond à un numéro majeur et à un numéro mineur, c'est un identifiant. On peut mettre le numéro mineur à 0, mais comment trouver le numéro majeur ? À quoi est-il censé correspondre ? Au driver, donc quand on va concevoir notre driver/module, on va enregistrer un driver pour un nombre majeur. Ainsi, le nom qu'on donne au fichier créé par <strong>mknod</strong> n'a aucune importance, tant que son numéro majeur correspond bien à celui enregistré par le driver. </p>
+</li>
+<li>
+<p>Comment va-t-on créer dans le noyau un pilote de périphérique ? Il existe une fonction pour cela : <strong>register_chrdev()</strong>. Celle-ci va enregistrer une structure <strong>f_ops</strong> qui va servir à traiter tous les périphériques caractères qui ont le numéro majeur passé en paramètre. Ainsi les paramètres de <strong>register_chrdev()</strong> sont : un numéro majeur (elle va enregistrer le module comme étant le driver d'un numéro majeur), un nom (le driver a un nom, on le nomme comme on le souhaite) et une structure <strong>file_operations</strong> (qu'on devra préalablement créer). La 1ère question de l'exercice 5 consiste à créer le périphérique caractère et à créer le driver.</p>
+</li>
+<li>
+<p><u>Attention</u> : si on met n'importe quel numéro majeur dans le premier argument, on risque de tomber sur un numéro majeur qui est déjà utilisé. L'astuce consiste à mettre le premier argument à 0, ce faisant la valeur de retour de la fonction <strong>register_chrdev()</strong> sera égale à un numéro majeur disponible choisit par le noyau. Si la valeur retournée est inférieure à 0, c'est qu'il y a eu une erreur.</p>
+</li>
+<li>
+<p><u>Astuce</u> : il y a dans le noyau un fichier nommé <strong>/proc/devices</strong>, qui liste tous les pilotes de périphériques enregistrés (caractères et blocs). Plus précisément, on a dedans la liste des périphériques enregistrés avec les numéros majeurs correspondants. Que se passe-t-il si on enlève notre module ? On peut avoir un driver de périphérique chargé, sans que le périphérique existe. Cependant, il faut donc surtout penser à se désenregistrer car si nos drivers restent en vie (ils ne sont pas désenregistrés) et qu'on enlève notre module, alors le jour où on aura un périphérique qui va apparaitre, cela va planter. Donc quand on décharge notre module, il faut penser à faire <strong>unregister_chrdev()</strong> avec le numéro majeur concerné.</p>
+</li>
+<li>
+<p>Globalement, le numéro majeur est là pour référencer les pilotes des périphériques alors que les numéros majeurs servent quand on a plusieurs périphériques qui utilisent le même pilote.</p>
+</li>
+<li>
+<p>Le paramètre de <strong>ioctl()</strong> (c'est-à-dire son dernier argument) est variable : cela peut être un entier, un pointeur, une structure... Ainsi en tant que codeurs, nous allons recevoir exactement ce qui est passé dans le dernier paramètre de <strong>ioctl()</strong> : si c'est un entier, il nous retourne un entier, si on met un pointeur, on va recevoir un pointeur. Que se passe-t-il par rapport au <em>sysfs</em> dans le cas d'un pointeur ? On ne pourra pas l'utiliser car il vient de l'espace utilisateur. Pour cela, on va utiliser deux fonctions : <strong>copy_from_user()</strong> (copie les données d'une adresse particulière de l'espace utilisateur dans une zone mémoire du noyau) et <strong>copy_to_user()</strong> (inverse, copie les données dans un tampon de l'espace utilisateur).</p>
+</li>
+<li>
+<p>On peut mettre dans l'argument <strong>cmd</strong> de <strong>ioctl()</strong> "1234", mais ce n'est pas propre car les numéros de commande peuvent être partagés entre plusieurs drivers (pour des raisons historiques). Ainsi, le numéro de commande doit être unique. Il existe des macros : <strong>_IOR</strong> (création de commande en lecture seule, on ne pourra que lire des données, on fera donc typiquement <strong>copy_to_user()</strong>), <strong>_IOW</strong> (en écriture) et <strong>_IORW</strong> (en lecture-écriture). Ces macros prennent plusieurs paramètres : le premier sera un nombre magique (entier, permet de faire du pseudo-aléatoire pour avoir une portion d'identifiant), un numéro de séquence (entier aussi) et le type de la donnée (prend en réalité la taille du type (<strong>sizeof()</strong> pour générer un numéro de commande unique).</p>
+</li>
+<li>
+<p>Dans le cadre de ce TP, le numéro magique sera "N" (un caractère étant un entier), le numéro de séquence est choisi par nous, le type est en fait le type de la donnée qu'on va passer en paramètre (si on passe par exemple un tableau de caractères, alors le type sera <strong>char *</strong> ; on peut aussi passer une structure).</p>
+</li>
+</ul>
+</li>
+</ul>
+<p>(59m28)</p>
+<ul>
+<li>Voir le fichier pid.h</li>
+<li>Quand on a une structure <strong>pid</strong>, on ne peut pas après coup retrouver la valeur du PID qu'il y a dedans. Pour cela, il y a une fonction nommée <strong>pid_nr()</strong>, qui prend en paramètre la structure <strong>pid</strong> en question.</li>
+<li>1/3/5/2/4/6</li>
+</ul>
+<h1>TP 7</h1>
+<ul>
+<li>Le sujet de ce TP se base sur celui de l'exercice 2 du précédent TP.</li>
+</ul>
+<h1>Cours Filesystem et mémoire</h1>
+<ul>
+<li>Quelles fonctionnalités offre un <em>filesystem</em> simple ? Il gère deux choses :<ul>
+<li>Il associe grosso-modo les données (les blocs) à un fichier, avec un certain ordre (car il y a un ordre dans la notion de fichier, ce n'est pas un ensemble aléatoire de données). En résumé, le <em>filesystem</em> associe une séquence de blocs à un fichier.</li>
+<li>L'espace libre. Ainsi, si d'un côté on gère les blocs affectés à un fichier, d'un autre côté on gère aussi les blocs libres.
+Pourquoi ne parle-t-on pas de la notion de répertoire que pourrait éventuellement offrir le <em>filesystem</em> ? Car sous Unix, tout est fichier.
+Les noms des fichiers dans un système Unix sont rangés dans les répertoires (certainement pas dans la table des inodes). D'ailleurs, le nom des fichiers est la seule chose qui n'est pas directement enregistré dans l'inode du fichier concerné, c'est fait en réalité dans son répertoire. Cela permet d'avoir plusieurs noms pour un même fichier, autrement dit un lien physique.</li>
+</ul>
+</li>
+<li>Quelle est la critique que l'on peut faire à la façon de gérer les fichiers de <em>System V</em> ? Tout est directement intégré dans le <em>filesystem</em> de <em>System V</em>. Ainsi, faire un système de fichiers dans le système est réimplémenter tous les appels systèmes (<strong>open()</strong>, <strong>read()</strong>, <strong>lseek()</strong>, etc...). En résumé, le défaut tel que conçu dans le <em>System V</em> est qu'un <em>filesystem</em> consiste à implémenter tous les appels systèmes qui concernent les fichiers.</li>
+<li>La conception d'un système de fichiers demande de réimplémenter un certain nombre d'appels systèmes. Le noyau de Linux est construit comme un oignon. (voir 12m00, schéma V6). (Voir schéma avec VFS) On va rajouter dans l'OS une couche d'abstraction nommée le VFS (<em>Virtual File System</em>), c'est une couche qui rassemble tout ce qui est commun et qui va définir toutes les abstractions. Ainsi, faire un <em>filesystem</em> consiste à générer tout ce qui est en dessous de la couche VFS. On peut du coup avoir deux <em>filesystems</em> (par exemple <em>ext2</em> et <em>ext4</em>), mais avec le gros du code factorisé. Donc un appel système passe par le VFS, c'est-à-dire que par exemple <strong>read()</strong> appelle le VFS, qui va dispatcher sur la bonne implémentation du <strong>read()</strong> dans le <em>ext2</em> (par exemple).</li>
+<li>(schéma V6) Entre le <em>filesystem</em> et les drivers, on a le <em>buffer cache</em>. Quel est le rôle du <em>buffer cache</em> ? Ce n'est pas que pour faire du cache, son rôle est de charger un bloc en mémoire, qui se retrouvera dans un buffer. <u>Attention</u> : un <em>filesystem</em> ne fait que des <strong>read()</strong> bas-niveau (qui sont des <strong>read()</strong> du <em>buffer cache</em>, soit un <strong>bread()</strong>). Ainsi, le <em>filesystem</em> ne vas pas chercher les blocs dans le disque, il considère qu'il arrive à les avoir en mémoire. En résumé, ce n'est pas le rôle du <em>filesystem</em> d'aller sur le disque ni d'interroger le driver, son rôle est juste d'exiger un bloc particulier en mémoire.</li>
+<li>Pour identifier un bloc, on a un tuple composé du numéro du <em>device</em> et du numéro du bloc. Un numéro de <em>device</em> est composé d'un numéro majeur et d'un numéro mineur. Un numéro majeur est le numéro du driver (permettant d'identifier celui-ci), un numéro mineur est le numéro du <em>device</em> qui utilise <span style="color:red;">???</span>. Par exemple, si on a (5,3) cela signifie que c'est le 3ème périphérique à utiliser le driver n°3. Cette numérotation marche pour les cartes graphiques, etc...</li>
+<li>Les explications données ci-dessus sur le <em>buffer cache</em> étaient valables il y a des années. Aujourd'hui, le terme <em>buffer cache</em> n'est plus d'actualité. En dessous (schéma VFS) des systèmes de fichiers, on a le <em>page cache</em>. Avec celui-ci, on considère tant bien que mal d'avoir 1 bloc égal à 1 page, ce qui permet de faire en sorte que les mêmes structures de données qui permettent de gérer les pages <em>anonymes</em> (c'est-à-dire les pages qui ne sont pas reliées à un fichier) permettent également à accéder aux blocs. En résumé, la gestion de la mémoire est unifiée (dans Linux) avec tout ce qui concerne les processus, les kmalloc, etc... L'avantage est que 100% de ce qui est inutilisé dans la mémoire servira au cache, alors que dans le <em>System 6</em> on allouait un <em>buffer cache</em> (avec une taille fixe, statique) qu'on ne pouvait plus utiliser s'il était plein, même s'il restait de la RAM inutilisée. Si le bloc ne fait pas exactement la taille de la page, alors on le fragmente. Pour enregistrer cette fragmentation, on a une structure qui fait une indirection, on a un pointeur vers une structure qui permet de gérer <span style="color:red;">(gérer quoi ?)</span>. </li>
+<li>VFS est une virtualisation, mais dans le sens <em>hyperviseur</em>. C'est une <u>abstraction</u>, qui permet grosso-modo de regrouper tout ce qui est commun à tous les <em>filesystems</em>. En résumé, VFS permet de factoriser du code. Du coup, à chaque fois qu'on améliore le VFS, on améliore pour tout le monde.</li>
+<li>Concernant le <em>System 6</em>, ne pas confondre le <em>b</em> de <strong>bread()</strong> avec <em>block read</em>. Il signifie en réalité <em>buffer</em>.</li>
+<li>Le problème avec les <em>buffers caches</em>, c'est qu'on réservait une partie de la mémoire spécifique pour les blocs. Tandis qu'aujourd'hui, on raisonne de cette façon : pourquoi ne pas gérer les pages dans le même code avec les mêmes fonctions et les mêmes abtractions, où on gère le reste de la mémoire des processus. L'avantage est que quand on libère de la mémoire avec un <strong>free()</strong>, on peut la récupérer pour faire du cache (c'est gratuit puisque c'est la même structure de données). C'est pour cela qu'on parle aujourd'hui de <em>page cache</em> et non pas de <em>buffer cache</em>.</li>
+<li>Est-ce que le <em>buffer cache</em> a une taille statique et le <em>page cache</em> une taille dynamique ? Non, car le <em>page cache</em> gère des pages (dont la taille est définie et fixe, 4 Ko en général) tandis qu'un buffer fait la taille d'un bloc. Ce qui peut arriver, c'est que la taille d'une page peut correspondre à plusieurs blocs (le <em>filesystem</em> ne veut pas entendre parler de tout ce qui concerne les blocs, il cherche simplement à se décaler de tant par rapport à une page), dans ce cas on a une autre indirection.</li>
+<li>Du point de vue de l'utilisateur (donc si on n'est pas dans le noyau), VFS est une interface, une API unifiée de tous les appels systèmes (car chaque appel système correspond à une fonctionnalité du VFS). Du point du développeur Kernel, cela lui permete de factoriser une grande partie des fonctionnalités et des structures de données. Du point de vue de celui qui fait le pilote de périphérique, quand on code le <em>filesystem</em>, on utilise des fois des fonctions d'une "boite à outils" offert par le VFS. Et comme la plupart des appels aux drivers sont fait par cette "boite à outils", du coup la personne qui développe le driver développe des fonctionnalités qui sont utilisées par le VFS.</li>
+<li>Quelles méta-données a-t-on besoin pour gérer un fichier ? La liste des blocs qui composent le fichier (cette liste est contenue dans l'inode, l'inode étant un concept, un niveau d'abstraction). Que trouve-t-on aussi dans l'inode ? La taille, les droits, les dates (création, modification et accès), le numéro (+ le <em>device</em>), le propriétaire et le groupe. eN revanche, le nom du fichier n'est pas dans l'inode.<br><u>Note</u> : tous les champs sus-mentionnés, appartenant à une structure d'inode, sont préfixés par <strong>i_XXX</strong>. C'est quelque chose de très bien fait dans le noyau et qui est à reprendre lorsqu'on développe des structures dans le noyau, puisque les champs des structures sont préfixés par les lettres qui donnent le nom de la structure.</li>
+<li>Si on veut écrire une information dans le fichier, on a besoin de la position dans le fichier. Cette position ne se trouve pas dans l'inode, elle se trouve dans une structure intermédiaire <strong>file</strong>, qui contient la position (champs <strong>f_offset</strong>), le mode d'ouverture (<em>read</em>, <em>write</em> ou <em>read</em>/<em>write</em>, à ne pas confondre avec les droits) et les drapeaux.</li>
+</ul>
+<p>(ré-écouter éventuellement 50h00, explications schémas)</p>
+<p>(55m10)</p>
+<p>vendredi 11heures</p>
+<ul>
+<li>Le but est de comprendre une nouvelle abstraction </li>
+</ul>
+<h1>TP 9 (16/12/15)</h1>
+<ul>
+<li>Pourquoi lorqu'on demande à accéder à telle fonction du noyau, cela échoue ? Car le symbole de la fonction n'est pas exporté, il faut le faire à l'aide de la macro EXPORT_MACRO???. Dans le noyau, une variable/fonction déclarée avec le mot-clé <strong>extern</strong> est externe et sera accessible <strong>dans</strong> le noyau. Mais si on fait un module et qu'on n'exporte pas le symbole de la variable/fonction, le module n'y aura pas accès.
+Le mot-clé <strong>extern</strong> permet de dire qu'on va utiliser une variable donnée, mais cette variable sera définie quelque part ailleurs (en dehors du fichier). On saura au moment de la liaison (à la compilation) où cette variable est définie. <u>Note</u> : pour déclarer une fonction, on utilise pour cela un prototype. Un prototype d'une fonction est une déclaration (pas une définition). Ainsi, un prototype (en C) utilise <strong>extern</strong> par défaut ; la raison pour laquelle le noyau utilise le mot-clé <strong>extern</strong> dans ces prototypes est que c'est plus explicite.</li>
+<li>L'exercice 2 suppose qu'on a fini le TP précédent, mais ce n'est en réalité pas nécessaire. Les explications et indications de la question 3 de l'exercice 2 sont fausses car elles concernent le noyau 2.6. Inutile donc de trouver les variables <strong>unlock_kernel</strong> et <strong>loop_???</strong> car elles n'existent plus. La question 3 demande de trouver la table des appels systèmes dans le noyau (sachant qu'autrefois la table était exportée, on pouvait ainsi la modifier via un module ; ce n'est plus le cas aujourd'hui, un module ne peut pas accéder à la table des appels systèmes et la modifier). On doit donc trouver et deviner l'emplacement en mémoire de la table des appels systèmes.<br>Historiquement (le procédé qui sera présenté ne marchera plus aujourd'hui), on savait que la table se trouvait quelque part entre les adresses de <strong>unlock_kernel</strong> et <strong>loop_???</strong>. Ainsi, l'intérêt était qu'on pouvait scanner la mémoire uniquement entre les deux adresses sus-mentionnées pour forcément trouver la table des appels systèmes.<br>Comment trouver aujourd'hui la table des appels systèmes ? En scannant toute la mémoire. En réalité, la vraie manière de trouver la table est que, dans le noyau, on a l'appel système <strong>close()</strong> (c'est une fonction qui s'appelle <strong>sys_close()</strong>, on retrouve donc son adresse en mémoire via le symbole <strong>sys_close</strong>). En effet, il y a quelque part à l'intérieur de cette table une case dans laquelle il y a d'écrit <strong>sys_close</strong>. Ainsi, si on trouve quelque part une case mémoire dans laquelle P[_NR_close] est égal à <strong>sys_close</strong>, alors on sait que P est le début de notre table des appels systèmes. Détails de la façon de faire plus bas.  (04m10)</li>
+<li>Le fichier <strong>arch/x86/entry/syscalls/syscall_64.tbl</strong> permet de décrire la table des appels systèmes, qui sera générée lors de la compilation. D'ailleurs, si on regarde le répertoire dans lequel se trouve le fichier <strong>syscall_64.tbl</strong>, il y a un <strong>Makefile</strong> et des scripts qui vont créer la vraie table. On a en gros une table des appels systèmes qui fait 512 cases, les premiers appels systèmes sont pour l'architecture 64 bits et les derniers appels systèmes énumérés sont pour l'architecture x32 (ce n'est pas l'architecture 32 bits !). L'architecture x32 est du 64 bits, le noyau fait tout en 64 bits, mais les applications s'exécutent en 32 bits. C'est avantage car la plupart des applications consomment assez peu de mémoire (moins de 4 Go de mémoire), on n'a donc pas forcément intérêt à faire du 64 bits. Pourquoi ? Car les pointeurs font en 64 bits 8 octets au lieu de 4, et comme les applications manipulent beaucoup d'adresses, cela consomme plus de mémoire en 64 bits. L'intérêt de cette fausse architecture est de mélanger proprement le 32 et 64 bits. Donc plutôt que de faire du 64 bits dans lequel on lance des applications 32 bits, les concepteurs du noyau ont créé une pseudo-architecture : les applications s'exécutent en mode 32 bits, mais elles exploitent quand même des fonctionnalités avancées des architectures Intel 64 bits.<br>Si une application a besoin d'exploiter pleinement le 64 bits, est-ce que ses pointeurs 32 bits seront convertis en 64 bits ? Non, les applications ne seront juste qu'en 32 bits (c'est l'un ou l'autre, on ne peut pas avoir les deux).<br>Par rapport au fichier <strong>syscall_64.tbl</strong>, il y a certains appels systèmes qui sont spécifiques à l'architecture x32, ils sont d'ailleurs regroupés dans une zone de la mémoire car ils sont souvent manipulés ensembles. Et s'ils sont proches en mémoire, ils vont être proches dans le cache du processeur, ce sera donc plus efficace. Ainsi, plutôt que de mélanger les appels systèmes x32 avec les autres (ce qui fera tout le temps des défauts de caches), on les regroupe.</li>
+</ul>
+<h1>Mes réponses</h1>
+<h2>TP2</h2>
+<h3>Exercice 1</h3>
+<h4>Question 1</h4>
+<p>Cela lance dans une nouvelle fenêtre la machine virtuelle contenue dans l'image <strong>nmv-tp.img</strong>.</p>
+<h4>Question 2</h4>
+<p>La commande <strong>dd</strong> permet de réaliser des copies "brutes" par blocs d'octets d'un disque vers un fichier ou un autre disque, c'est-à-dire que la commande ne se contente que de copier une zone disque particulière sans prendre en compte la structure du contenu de cette zone.</p>
+<p><code>dd bs=1M count=50 if=/dev/zero of=~/myHome.img</code>
+bs = Copie 1 Mo à chaque temps.
+count = Copie les 50 premiers blocs de <strong>/dev/zero</strong>.</p>
+<p><code>/sbin/mkfs.ext4 -F ~/myHome.img</code></p>
+<p>Formate la nouvelle image en <em>ext4</em>. L'option <strong>-F</strong> force le programme à créer un système de fichier, même si le périphérique spécifié (de destination) n'est pas une partition ou un bloc spécial de périphérique.</p>
+<h4>Question 3</h4>
+<p><code>exec qemu-system-x86_64 -hda "${HDA}" -hdb "${HDB}" -m 2G -net nic -net user -boot c</code></p>
+<ul>
+<li>Les options <strong>-hda</strong> et <strong>-hdb</strong> désignent des fichiers image représentant un disque.</li>
+<li>L'option <strong>-m</strong> défini la quantité de mémoire virtuelle allouée à la machine virtuelle (ici 2 Go)</li>
+<li>L'option <strong>-net nic</strong> créée une nouvelle interface réseau (Network Interface Card).</li>
+<li>L'option <strong>-net user</strong> défini l'aspect réseau de la VM en mode utilisateur, qui a l'avantage de ne pas exiger des privilèges <em>root</em>.</li>
+<li>L'option <strong>-boot</strong> permet de désigner un ordre de boot entre plusieurs supports (exactement comme dans un BIOS normal, où on demande à booter par exemple sur un CD, puis sur le disque dur s'il n'y a pas de CD). La valeur à spécifier dépend de l'architecture cible de la VM. L'argument <strong>c</strong> signifie qu'on souhaite booter sur le premier disque dur.</li>
+</ul>
+<h3>Exercice 2</h3>
+<h4>Question 1</h4>
+<p>Les options de débogage se trouvent dans la catégorie <strong>Kernel hacking</strong>.</p>
+<h4>Question 2</h4>
+<p>Selon le livre <em>Linux Kernel in a Nutshell</em> de <em>Greg Kroah-Hartman</em>, la valeur donnée à l'option <strong>-j</strong> de <strong>make</strong> doit être le double du nombre de processeurs de la machine.</p>
+<h4>Question 3</h4>
+<p>Après compilation du noyau, la commande <strong>file</strong> appliquée à l'exécutable donne :</p>
+<pre><code>$ file arch/x86/boot/bzImage
+arch/x86/boot/bzImage: Linux/x86 Kernel, Setup Version 0x20d, bzImage, Version 4.2.3, RO-rootFS, swap_dev 0x7, Normal VGA
+</code></pre>
+
+<h4>Question 4</h4>
+<p>Contenu (partiel) du script <strong>qemu-run-externKernel.sh</strong> :</p>
+<pre><code>CMDLINE='root=/dev/sda1 rw vga=792 console=ttyS0 kgdboc=ttyS1'
+
+exec qemu-system-x86_64 -hda &quot;${HDA}&quot; -hdb &quot;${HDB}&quot; -serial stdio -serial tcp::1234,server,nowait -net nic -net user -boot c -m 2G -kernel &quot;${KERNEL}&quot; -append &quot;${CMDLINE}&quot;
+</code></pre>
+
+<p>Dans la variable <strong>CMDLINE</strong> ont été spécifiés un ensemble d'options pour le noyau Linux. Ces options seront transmises grâce à l'option <strong>-append</strong> de <em>QEMU</em>.</p>
+<ul>
+<li>ECOUTER TP2</li>
+</ul>
+<p>Par rapport à la commande <strong>qemu-system-x86_64</strong> expliquée à la question 3 de l'exercice 1, les options supplémentaires sont :</p>
+<ul>
+<li>L'option <strong>-kernel</strong> permet de déterminer le noyau à exécuter. Un binaire (celui du noyau, c'est-à-dire <strong>bzImage</strong>) doit être spécifié en argument.</li>
+<li>L'option <strong>-append</strong> permet de spécifier des options au noyau.</li>
+<li>L'option <strong>-serial</strong> permet de rediriger le port série virtuel de la VM vers la machine hôte. Par exemple, <strong>-serial stdio</strong> redirige l'entrée/sortie standard de sorte qu'on puisse interargir avec la VM depuis la console. <strong>-serial tcp::1234,server,nowait</strong> permet d'écouter (sans attendre) une connexion via TCP au port 1234.</li>
+</ul>
+<p>On peut être sûr que c'est notre noyau car la commande <strong>uname</strong> retourne la bonne version (celle qu'on a construite) :</p>
+<pre><code>$ uname -r
+4.2.3
+</code></pre>
+
+<h4>Question 5</h4>
+<p><u>Rappel</u> : Pour configurer le noyau à constuire, lancer :</p>
+<p><code>$ make nconfig</code></p>
+<p>Pour ajouter un suffixe à la version du noyau, se rendre à la catégorie <strong>General setup</strong> et trouver la configuration <strong>() Local version - append to kernel release</strong>. Une fenêtre s'ouvrira, où on pourra entrer une valeur.</p>
+<h4>Question 6</h4>
+<p>Pour afficher la liste des modules chargés, lancer la commande :</p>
+<pre><code>$ lsmod
+Module                  Size  Used by
+</code></pre>
+
+<p>On constate qu'il n'y a aucun module chargé. Ceci est dû à la configuration (fichier <strong>.config</strong>) de notre noyau, car on n'a pas demandé à compiler des modules (on avait la possibilité avant de compiler notre noyau de spécifier que certaines parties soient compilées sous forme de module). D'ailleurs, le fichier <strong>linux-config-nmv</strong> fourni par les profs a été adapté pour que certaines parties soient intégrées au noyau (au lieu d'être habituellement compilées sous forme de module).</p>
+<h3>Exercice 3</h3>
+<h4>Question 1</h4>
+<p>Voir le fichier <strong>hello.c</strong>. Pour transmettre le code source à la machine virtuelle, faire (depuis la VM) :</p>
+<p><code>scp account@10.0.2.2:/path/to/file/hello.c /destination/in/the/vm</code></p>
+<p><u>Attention</u> : Ne pas oublier de compiler le code source.</p>
+<h4>Question 2</h4>
+<p>Arrêter la machine virtuelle si celle-ci est lancée puis ajouter dans la variable <strong>CMDLINE</strong> du script <strong>qemu-run-externKernel.sh</strong> l'option suivante : <strong>init=/root/hello</strong>. En relançant la machine virtuelle, on peut voir dans le <em>syslog</em> l'affichage "Hello World". La machine virtuelle finit cependant par crasher.</p>
+<h4>Question 3</h4>
+<p>En simplifiant, <strong>init</strong> est censé être le tout 1er processus, le processus n°0. Il sera le parent de tous les autres processus. Mais si on fait <strong>init=/root/hello</strong>, alors l'exécutable <strong>hello</strong> devient le processus 0 (il devient le parent de tous les autres processus). Mais s'il se termine, que peut-il se passer d'autre ? Il n'y a plus rien à exécuter, d'où le crash.</p>
+<p><span style="color:red;">Doute : si on remplace <strong>init</strong> par <strong>hello</strong>, est-ce que toute l'arborescence de processus qui descendaient initialement de <strong>init</strong> va aussi exister avec <strong>hello</strong> ?</span></p>
+<h4>Question 4</h4>
+<p>Le travail de la commande <strong>ps</strong> est d'afficher des informations sur les processus (droits, mémoire utilisée, etc...), ces informations étant dans <strong>/proc</strong> (on a d'ailleurs 1 répertoire par PID). Utiliser l'option <strong>init=/bin/ps</strong> ne marchera pas car le répertoire <strong>/proc</strong> n'a pas été monté.</p>
+<p><span style="color:red;">C'est le processus <strong>init</strong> qui monte les répertoires ?</span></p>
+<h4>Question 5</h4>
+<p><span style="color:red;">Écouter NMV 14/10 à partir de 42m30.</span></p>
+<h4>Question 6</h4>
+<h3>Exercice 4</h3>
+<h4>Question 1</h4>
+<h2>TP 3</h2>
+<h3>Exercice 1</h3>
+<h4>Question 1</h4>
+<p>Boucle jusqu'à ce que l'utilisateur entre le caractère "e". Une alarme périodique est également active, provoquant l'affichage périodique d'un message.</p>
+<h4>Question 2</h4>
+<p>Voir le fichier <strong>Makefile</strong>. Explications :</p>
+<p>Cependant, lorsqu'on cherche à exécuter le binaire, le message d'erreur survient :</p>
+<pre><code>$ ./cron_func 
+./cron_func: error while loading shared libraries: libfunc.so: cannot open shared object file: No such file or directory
+</code></pre>
+
+<p>Ceci est dû au fait que <strong>ldd</strong> recherche ses librairies partagées dans des répertoires spécifiques (déterminés par la variable d'environnement <strong>$PATH</strong>), le nôtre n'en faisant pas partie. Pour en rajouter, on va utiliser une autre variable d'environnement, <strong>$LD_LIBRARY_PATH</strong>, où on y indiquera le répertoire courant (censé contenir le fichier <strong>libfunc.so</strong>) :</p>
+<pre><code>LD_LIBRARY_PATH=. ./cron_func
+</code></pre>
+
+<h4>Question 3</h4>
+<p>Voir <strong>Makefile</strong> et <strong>my_read.c</strong>.</p>
+<h4>Question 4</h4>
+<p>Voir <strong>steamc.c</strong></p>
+<h3>Exercice 2</h3>
+<h4>Question 1</h4>
+<p>Pour compiler le module dans la bonne version du noyau (c'est-à-dire la 4.2.3), il faut lancer le <em>Makefile</em> en définissant la variable d'environnement <strong>KERNELDIR</strong> au répertoire contenant les sources du noyau en question :</p>
+<p><code>make KERNELDIR=/tmp/linux-4.2.3/</code></p>
+<p>Un module est lié à une version particulière du noyau car il s'appuie sur des structures de données et des prototypes de fonctions propres à cette version du noyau. L'interface vue par un module peut changer significativement d'une version de noyau à une autre.</p>
+<p>Seul le fichier <strong>helloWorld.ko</strong> sera chargé dans le noyau.</p>
+<h4>Question 2</h4>
+<h4>Question 3</h4>
+<p>Pour charger le module :</p>
+<p><code>insmod helloWorld.ko</code></p>
+<p>Pour le décharger :</p>
+<p><code>rmmod helloWorld</code></p>
+<p>Les endroits où l'on peut lire le message <em>Hello world</em> sont à l'aide des commandes <strong>dmesg</strong> et <strong>journalctl</strong>.</p>
+<h4>Question 4</h4>
+<p>Voir le fichier <strong>helloWorldParam.c</strong>.</p>
+<p>Avant tout, pour pouvoir compiler notre nouveau fichier <strong>helloWorldParam.c</strong>, modifier la ligne <code>obj-m := helloWorld.o</code> du <em>Makefile</em> fourni avec <strong>helloWorld.c</strong> en <code>obj-m := helloWorld.o helloWorldParam.o</code>.</p>
+<p>La macro <strong>module_param()</strong> prend 3 arguments : le nom de la variable, son type et les permissions pour le fichier correspondant dans <em>sysfs</em>. <u>Attention</u> : Si les permissions sont égales à 0, le fichier correspondant dans <em>sysfs</em> ne sera pas créé.</p>
+<p><u>Note</u> : lorsqu'une chaîne de caractère sera transmise en paramètre, la variable qui la contiendra (ici <strong>whom</strong>) sera de type <strong>char *</strong>. Mais lorsqu'on devra indiquer son type dans la macro <strong>module_param()</strong>, on écrira <strong>charp</strong> (<em>pointer to a char</em>), jamais <strong>char *</strong>.</p>
+<p>Une fois transféré sur la machine virtuelle, le module est chargé grâce à la commande :</p>
+<p><code>insmod helloWorld.ko whom=corentin howmany=3</code></p>
+<p>On peut constater qu'il y a des paramètres. S'ils sont absents, ce seront les valeurs par défaut (définies dans le code du module, lors de la déclaration des variables associées à ces paramètres) qui seront utilisées.</p>
+<h4>Question 5</h4>
+<p>Le rendu de la commande <strong>modinfo</strong> est le suivant :</p>
+<pre><code>$ modinfo helloWorldParam.ko 
+filename:       /root/helloWorldParam.ko
+license:        GPL
+author:         Julien Sopena, LIP6
+description:    Module &quot;hello word param&quot; pour noyau linux
+depends:        
+vermagic:       4.2.3 SMP mod_unload 
+parm:           howmany:An integer (int)
+parm:           whom:A character string (charp)
+</code></pre>
+
+<p>Pour avoir une description de chaque paramètre, il faut utiliser dans le code du module la macro <strong>MODULE_PARM_DESC()</strong>, qui associe à un paramètre (via sa variable, en 1er argument) un texte (2nd argument). Voir le fichier <strong>helloWorldParam.c</strong>.</p>
+<h4>Question 6</h4>
+<p>Pour changer l'affiche du déchargement du module via l'interface <strong>/sys/</strong>, il faut faire en sorte que l'un des arguments du module (par exemple <strong>whom</strong>) soit modifiable (en supposant pour cet exercice que sa variable soit consultée et affichée lors du déchargement du module). Pour cela, en prenant le cas de <strong>whom</strong>, il faut modifier le dernier argument de la macro <strong>module_param()</strong> concernée pour stipuler que l'argument <strong>whom</strong> est modifiable via l'interface <strong>/sys</strong>.</p>
+<p><u>Rappel</u> : si le dernier argument de la macro <strong>module_param()</strong> est égal à 0, alors il n'y aura aucune représentation de l'argument en question dans <strong>/sys</strong>.</p>
+<p>Ainsi dans le fichier <strong>helloWorldParam.c</strong>, la macro <strong>helloWorldParam.c</strong> dédiée à l'argument <strong>whom</strong> sera :<br><code>module_param(whom, charp, S_IWUSR|S_IWGRP);</code></p>
+<p>Les macros <strong>S_IWUSR</strong> et <strong>S_IWGRP</strong> signifient que le fichier dans <strong>/sys</strong> sera modifiable respectivement par le propriétaire et le groupe propriétaire.</p>
+<p>Une fois le module transféré dans la machine virtuelle et chargé, on peut utiliser la commande <strong>echo</strong> pour changer la valeur de l'argument <strong>whom</strong>, et donc de l'affichage du déchargement du module :</p>
+<pre><code>$ echo &quot;Aurore&quot; &gt; /sys/module/helloWorldParam/parameters/whom
+$ rmmod helloWorldParam
+</code></pre>
+
+<p>On pourra alors consulter dans les logs du système :<br><code>Goodbye, Aurore</code></p>
+<h3>Exercice 3</h3>
+<h4>Question 1</h4>
+<p>La variable globale <strong>init_uts_ns</strong> (de type <strong>struct uts_namespace</strong>) est utilisée dans le noyau pour stocker les informations retournée par l’appel système <strong>uname</strong>. Selon les résultats du site d'indexation du noyau (<a href="http://lxr.free-electrons.com/ident?i=init_uts_ns" target="_blank">ici</a>), <strong>init_uts_ns</strong> est déclarée dans le fichier <strong>include/linux/utsname.h</strong>. c'est cependant dans le fichier <strong>init/version.c</strong> qu'elle est définie.</p>
+<p>Une structure <strong>uts_namespace</strong> contient :</p>
+<pre><code>struct uts_namespace {
+    struct kref kref;
+    struct new_utsname name;
+    struct user_namespace *user_ns;
+    struct ns_common ns;
+};
+</code></pre>
+
+<p>Si on s'intéresse au contenu de la sous-structure <strong>new_utsname</strong> :</p>
+<pre><code>struct new_utsname {
+    char sysname[__NEW_UTS_LEN + 1];
+    char nodename[__NEW_UTS_LEN + 1];
+    char release[__NEW_UTS_LEN + 1];
+    char version[__NEW_UTS_LEN + 1];
+    char machine[__NEW_UTS_LEN + 1];
+    char domainname[__NEW_UTS_LEN + 1];
+};
+</code></pre>
+
+<p>La variable <strong>init_uts_ns</strong> peut être accédée par tous les modules car son symbole a été exporté (dans <strong>init/version.c</strong>) grâce à la macro <strong>EXPORT_SYMBOL_GPL()</strong>. Cela a pour effet de pouvoir utiliser cette variable dans un module.</p>
+<p><u>La macro <strong>EXPORT_SYMBOL()</strong></u> : les macros <strong>EXPORT_SYMBOL()</strong> et <strong>EXPORT_SYMBOL_GPL()</strong> permettent d'exporter le symbole d'une variable ou d'une fonction donnée, afin que la-dite fonction/variable soit utilisable dans les modules noyau.<br>Différence entre <strong>EXPORT_SYMBOL()</strong> et <strong>EXPORT_SYMBOL_GPL()</strong> : les deux macros font exactement la même chose, à l'exception que le symbole d'une variable/fonction exporté avec <strong>EXPORT_SYMBOL_GPL()</strong> ne sera pas visible (et ne sera donc pas utilisable) par les modules dont la licence n'est pas GPL.</p>
+<h4>Question 2</h4>
+<p>Voir le fichier <strong>uname_s.c</strong>.</p>
+<p><u>Note</u> : la fonction <strong>malloc()</strong> n'étant pas accessible depuis le noyau, on utilise à la place les fonctions <strong>kmalloc()</strong>/<strong>kfree()</strong>.</p>
+<p><u>Note</u> : les fonctions de manipulation des chaînes de caractères existent dans le noyau et sont définies dans le fichier <strong>lib/string.c</strong>.</p>
+<h3>Exercice 4</h3>
+<h4>Question 1</h4>
+<p>La fonction <strong>iterate_supers()</strong> permet d'appliquer une fonction donnée en paramètre (le 1er) pour chaque superbloc actif. Son second paramètre est un argument à passer à la fonction qui sera appelée pour chaque superbloc.</p>
+<p>Voir le fichier <strong>show_sb.c</strong>. Lorsqu'on cherche à compiler le module <strong>show_sb</strong>, on obtient l'erreur suivante :</p>
+<p><code>WARNING: "iterate_supers" [/path/to/module/show_sb.ko] undefined!</code></p>
+<p>Ceci est dû au fait que la fonction noyau <strong>iterate_supers()</strong> n'a jamais eu son symbole exporté (via les macros <strong>EXPORT_SYMBOL()</strong>/<strong>EXPORT_SYMBOL_GPL()</strong>). Ainsi, elle ne peut pas être appelée par un module. Pour résoudre le problème, il faut modifier le noyau en ajoutant dans le fichier <strong>fs/super.c</strong> (où se trouve la définition de la fonction <strong>iterate_supers()</strong>) la ligne suivante :</p>
+<p><code>EXPORT_SYMBOL(iterate_supers);</code></p>
+<p>Ainsi, on exporte le symbole de la fonction <strong>iterate_supers()</strong> pour que celle-ci soit utilisable dans un module. <u>Note</u> : l'ajout de la ligne dans le fichier <strong>fs/super.c</strong> est arbitraire, on aurait très bien pu la mettre ailleurs (une exportation de symbole peut être faite en théorie n'importe où dans le noyau).</p>
+<p><u>Attention</u> : Penser à recompiler le noyau avant de tenter de compiler le module !</p>
+<p><br></p>
+<p><u>Remarque</u> : on a dans notre fichier <strong>show_sb.c</strong> la ligne :</p>
+<p><code>pr_info("uuid=%pUB type=%s\n", sb-&gt;s_uuid, sb-&gt;s_type-&gt;name);</code></p>
+<p>On remarque un format inhabituel concernant l'affichage de l'UUID : <code>%pUB</code>. En réalité, le noyau a défini pour la fonction <strong>printk()</strong> (sur laquelle se base entre autres <strong>pr_info()</strong>) un ensemble de formats pour afficher diverses informations : adresses IPv4/IPv6, adresses MAC/FDDI, UUID/GUID et bien d'autres... La liste complète des formats est décrite dans la documentation contenue dans le fichier <strong>Documentation/printk-formats.txt</strong>.</p>
+<h4>Question 2</h4>
+<p>Fonctions utilisées :</p>
+<ul>
+<li><strong>get_fs_type()</strong> pour obtenir une structure qui représente un type de système de fichiers.<br><u>Attention</u> : cette structure a un compteur de références et doit être rendue avec <strong>put_filesystem()</strong></li>
+<li><strong>iterate_super_type()</strong> : parcours la liste des superblocks d’un type particulier</li>
+<li><strong>put_filesystem()</strong> : rend la référence de la structure passée en paramètre</li>
+<li><strong>getnstimeofday()</strong> : permet d’obtenir la date courante</li>
+</ul>
+<p>Pour les besoins de cette question, le noyau doit être modifié :</p>
+<ul>
+<li>Pour exporter le symbole de la fonction <strong>put_filesystem()</strong> (que l'on fera dans notre cas dans le fichier <strong>fs/filesystems.c</strong>) <span style="color:red;">Pourquoi est-ce que cette fonction n'est pas exportée alors que <strong>get_fs_type()</strong> l'est ? Car du coup on peut récupérer dans un module une structure <strong>file_system_type</strong> mais on ne peut pas la libérer... Au final, qu'est-ce qui motive les concepteurs du noyau à exporter certaines fonctions/variables et pas d'autres (<strong>iterate_supers()</strong> ne l'est pas nativement alors que <strong>iterate_super_type()</strong> l'est) ?</span></li>
+<li>Pour ajouter une datation aux superblocs, ce qui consiste à ajouter un champ (nommé par exemple <strong>s_time</strong>) dans la structure <strong>super_block</strong> (du fichier <strong>include/linux/fs.h</strong>) :<br><code>struct timespec s_time;</code></li>
+</ul>
+<p>Voir le fichier <strong>update_sb.c</strong>.</p>
+<p><span style="color:red;">Pourquoi n'ai-je pas besoin d'inclure le header <strong>include/linux/timekeeping.h</strong> pour utiliser la fonction getnstimeofday() ? Pourquoi est-ce que je peux utiliser la fonction <strong>getnstimeofday()</strong> alors que le symbole de celle-ci n'est pas exporté ?</span></p>
+<h3>Exercice 5</h3>
+<h4>Question 1</h4>
+<p>Le module est bien chargé dans le noyau puisqu'il apparait dans le résultat de la commande <strong>lsmod</strong> :</p>
+<pre><code>$ lsmod 
+Module                  Size  Used by
+helloWorld              1194  0 
+</code></pre>
+
+<p><u>Note</u> : Penser si nécessaire à recompiler le module <strong>helloWorld</strong> réalisé précédemment et à l'importer dans la machine virtuelle.</p>
+<h4>Question 2</h4>
+<p>Voir le fichier <strong>hideModule.c</strong>.</p>
+<p>Il existe une liste des modules (liés par des <strong>list_head</strong>), où chaque case est acccessible par le module concerné en utilisant la macro <strong>THIS_MODULE</strong>. Pour supprimer le module de la liste, il suffit d'ajouter dans le module la ligne :</p>
+<p><code>list_del(&amp;THIS_MODULE-&gt;list);</code></p>
+<p>La fonction <strong>list_del()</strong> (localisée dans le fichier <strong>include/linux/list.h</strong>) retire l'élément concerné de sa liste. Il modifie également ses champs <strong>next</strong> et <strong>prev</strong> pour les redéfinir respectivement à <strong>LIST_POISON1</strong> et <strong>LIST_POISON2</strong>.</p>
+<p><strong>LIST_POISON1</strong> et <strong>LIST_POISON2</strong> sont deux macros de <em>poisoning</em> (définies dans <strong>include/linux/poison.h</strong>) pointant chacune vers une adresse arbitraire. L'idée est qu'au lieu de définir des pointeurs à <em>NULL</em> (ce qu'on aurait pu faire pour les champs <strong>next</strong> et <strong>prev</strong> de l'élément qu'on a retiré de la liste), on va définir à la place des valeurs "poisons" spécifiques qui représentent quelque chose de non-initialisé. Bien que ces valeurs soient invalides en tant que pointeurs, leur signification est strictement équivalante à NULL. Leur objectif est de faciliter le debuggage (il existe un certain nombre de valeurs "poisons", chacune étant utilisé dans un contexte particulier).</p>
+<p>Évidemment, on ne pourra pas supprimer un module (<strong>rmmod</strong>) s'il a été préalablement enlevé de la liste des modules.</p>
+<h4>Question 3</h4>
+<p>Le modume <strong>hideModule</strong> est bien visible dans le <strong>sysfs</strong> :</p>
+<pre><code>$ ls /sys/module/hideModule/
+coresize  holders  initsize  initstate  notes  refcnt  sections  taint  uevent
+</code></pre>
+
+<h4>Question 4</h4>
+<p>Pour supprimer les répertoires du module dans <em>syfs</em>, il suffit d'utiliser la fonction <strong>kobject_del()</strong></p>
+<p><code>kobject_del(&amp;THIS_MODULE-&gt;mkobj.kobj);</code></p>
+<p><u>Note</u> : le fichier <strong>hideModule.c</strong> utilise cette fonction, il a juste été rédigé un peu différemment.</p>
+<p><span style="color:red;">Est-ce suffisant de faire seulement <strong>kobject_del()</strong> pour supprimer le module de <em>sysfs</em> ? Car il y a aussi les attributs, mais ils ont l'air d'être supprimés en même temps que le répertoire du module, donc... ?</span></p>
+<h2>TP 4</h2>
+<h3>Exercice 1</h3>
+<h4>Question 1</h4>
+<p>Pour activer le debugging du noyau et avoir KGDB, se rendre à la catégorie <strong>Kernel hacking</strong> et trouver la configuration <strong>Kernel debugging</strong>. S'assurer qu'elle est activée.</p>
+<h4>Question 2</h4>
+<p>Le moyen de communication pour contacter KGDB (de la machine virtuelle) depuis une instance de GDB (de la machine physique) est de passer par une socket TCP (port 1234). Ceci est possible grâce à l'option de QEMU <strong>-serial tcp::1234,server,nowait</strong>.</p>
+<h4>Question 3</h4>
+<p>L'option du noyau <strong>kgdbwait</strong> permet d'ordonner au noyau durant le processus d'armorçage (boot) de se stopper, de lancer KGDB et d'attendre qu'un debugger s'y connecte. Elle doit être spécifiée dans la variable <strong>CMDLINE</strong> du script <strong>qemu-run-externKernel.sh</strong>. (Re)démarrer ensuite la machine virtuelle.</p>
+<p>Depuis la machine physique, lancer GDB en lui donnant comme paramètre le binaire du noyau (à savoir <strong>vmlinux</strong>) :<br><code>$ gdb /path/to/binary/linux-4.2.3/vmlinux</code></p>
+<p>Enfin, sachant que la configuration de la machine virtuelle QEMU nous permet de contacter KGDB via le port 1234, lancer la commande GDB suivante :</p>
+<pre><code>(gdb) target remote localhost:1234
+Remote debugging using localhost:1234
+kgdb_breakpoint () at kernel/debug/debug_core.c:1072
+1072            wmb(); /* Sync point after breakpoint */
+(gdb)
+</code></pre>
+
+<h4>Question 4</h4>
+<p>La commande <strong>info thread</strong> permet d'obtenir la liste des threads actuellement connus (c'est-à-dire en cours d'exécution). Exemple de sortie :</p>
+<pre><code>(gdb) info thread
+  Id   Target Id         Frame 
+  35   Thread 122 (acpi_thermal_pm) 0x0000000000000000 in irq_stack_union ()
+  34   Thread 119 (kworker/u2:1) 0x0000000000000000 in irq_stack_union ()
+  33   Thread 118 (kthrotld) 0x0000000000000000 in irq_stack_union ()
+  32   Thread 80 (pdecrypt) 0x0000000000000000 in irq_stack_union ()
+  ...
+* 1    Thread 1 (swapper/0) kgdb_breakpoint () at kernel/debug/debug_core.c:1072
+</code></pre>
+
+<p>L'étoile à gauche d'un thread signifie que celui-ci est le thread actuel. Noter qu'il est possible de donner en paramètre un identifiant :</p>
+<pre><code>(gdb) info thread 12
+  Id   Target Id         Frame 
+  12   Thread 11 (khelper) 0x0000000000000000 in irq_stack_union ()
+</code></pre>
+
+<p>La commande <strong>monitor ps</strong> permet d'afficher la liste des processus en cours d'exécution. Exemple de sortie :</p>
+<pre><code>(gdb) monitor ps
+33 sleeping system daemon (state M) processes suppressed,
+use 'ps A' to see all.
+Task Addr               Pid   Parent [*] cpu State Thread             Command
+0xffff88007d3f8000        1        0  1    0   R  0xffff88007d3f8900 *swapper/0
+
+0xffff88007d3f8000        1        0  1    0   R  0xffff88007d3f8900 *swapper/0
+</code></pre>
+
+<p>Exemple de sortie avec en plus les processus endormis :</p>
+<pre><code>(gdb) monitor ps A
+Task Addr               Pid   Parent [*] cpu State Thread             Command
+0xffff88007d3f8000        1        0  1    0   R  0xffff88007d3f8900 *swapper/0
+0xffff88007d3f8000        1        0  1    0   R  0xffff88007d3f8900 *swapper/0
+0xffff88007d3f8c00        2        0  0    0   M  0xffff88007d3f9500  kthreadd
+0xffff88007d3f9800        3        2  0    0   M  0xffff88007d3fa100  ksoftirqd/0
+0xffff88007d3fa400        4        2  0    0   M  0xffff88007d3fad00  kworker/0:0
+...
+</code></pre>
+
+<p><span style="color:red;">De ce que j'ai compris, la commande <strong>monitor</strong> permet en gros de consulter l'état du système (threads, processus, modules chargés, variables d'environnements) en dehors des considérations telles que le code ou la mémoire. Confirmer ?</span></p>
+<h4>Question 5</h4>
+<p>La commande <strong>continue</strong> permet de poursuivre l'exécution du programme lorsque celui-ci a été précédemment interrompu par un point d'arrêt (<em>breakpoint</em>). Ainsi, dans le cas où on utilise l'option du noyau <strong>kgdbwait</strong>, il est possible de reprendre l'exécution du noyau grâce à cette commande (on peut voir à la question 3 lorsqu'on se connecte à KGDB que le code s'était arrêté au démarrage à un point d'arrêt).</p>
+<h4>Question 6</h4>
+<p>En plus de l'option noyau <strong>kgdbwait</strong>, il est possible d'activer <strong>kgdb</strong> en écrivant le caractère "g" dans le fichier <strong>/proc/sysrq-trigger</strong> :<br><code>echo g &gt; /proc/sysrq-trigger</code></p>
+<p>Il est bien entendu possible de reprendre l'exécution du noyau à l'aide de la commande <strong>continue</strong>.</p>
+<p>Le fichier <strong>/proc/sysrq-trigger</strong> est lié à la fonctionnalité noyau <em>Magic SysRq key</em>, qui permet de taper des combinaisons de touches prévues pour lesquelles le noyau répondra, indépendamment de ce qu'il est en train de faire ou s'il est complètement bloqué. Les fichiers liés à fonctionnalité <em>Magic SysRq key</em> sont :</p>
+<ul>
+<li><strong>/proc/sys/kernel/sysrq</strong> : contient un entier représentant les fonctions autorisées</li>
+<li><strong>/proc/sysrq-trigger</strong> : en écriture seule (il est impossible de le lire), tout caractère écrit dans ce fichier déclenchera une action spécifique (du moment qu'elle a été autorisée)</li>
+</ul>
+<p>La fonctionnalité noyau <em>Magic SysRq key</em> doit être activée lors de la compilation du noyau (section <strong>Kernel hacking</strong>, configuration <strong>Magic SysRq key</strong>). Pour savoir si la fonctionnalité est déjà présente dans le noyau actuel, lancer :<br><code>zcat /proc/config.gz | grep CONFIG_MAGIC_SYSRQ</code></p>
+<p>Voir pour plus de détails le fichier <strong>Documentation/sysrq.txt</strong>.</p>
+<h3>Exercice 2</h3>
+<h4>Question 1</h4>
+<p>Voir la question 1 exercice 3 du TP3.</p>
+<h4>Question 2</h4>
+<p>La commande <strong>print</strong> (ou son synonyme <strong>inspect</strong>) permet de consulter le contenu d'une variable :</p>
+<pre><code>(gdb) print init_uts_ns
+$1 = {kref = {refcount = {counter = 5}}, name = {sysname = &quot;Linux&quot;, '\000' &lt;repeats 59 times&gt;, nodename = &quot;vm-nmv&quot;, '\000' &lt;repeats 58 times&gt;, 
+    release = &quot;4.2.3&quot;, '\000' &lt;repeats 59 times&gt;, version = &quot;#6 SMP Mon Dec 21 12:06:28 CET 2015&quot;, '\000' &lt;repeats 29 times&gt;, machine = &quot;x86_64&quot;, '\000' &lt;repeats 58 times&gt;, 
+    domainname = &quot;(none)&quot;, '\000' &lt;repeats 58 times&gt;}, user_ns = 0xffffffff82253180 &lt;init_user_ns&gt;, ns = {stashed = {counter = 0}, ops = 0xffffffff81c2ca40 &lt;utsns_operations&gt;, 
+    inum = 4026531838}}
+</code></pre>
+
+<p>La commande <strong>set variable</strong> permet de modifier le contenu d'une variable :<br><code>(gdb) set variable init_uts_ns-&gt;name-&gt;release="Triskell"</code></p>
+<p>En reprenant l'exécution du noyau, on peut constater l'effet du changement en utilisant la commande <strong>uname</strong> :</p>
+<pre><code>$ uname -r
+Triskell
+</code></pre>
+
+<h3>Exercice 3</h3>
+<h4>Question 1</h4>
+<p>Le module <strong>hanging</strong> créé un thread qui définit l'état à non-interruptible </p>
+<h4>Question 2</h4>
+<p>Comme pour les autres modules, la compilation de <strong>hanging</strong> pour la version 2.3.4 du noyau se fait via la commande (en supposant que le <em>Makefile</em> se trouve dans le répertoire courant) :<br><code>make KERNELDIR=/tmp/linux-4.2.3/</code></p>
+<p>Depuis la machine virtuelle, lancer la commande :<br><code>scp account@10.0.2.2:/path/to/file/hanging.ko /destination/in/the/vm</code></p>
+<p>En observant le fichier <strong>hanging.c</strong>, on remarque plusieurs fonctions :</p>
+<ul>
+<li><strong>set_current_state()</strong> : change l'état du processus en cours d'exécution pour celui passé en argument. Il existe au moins 3 états (macros définies dans le fichier <strong>include/linux/sched.h</strong>) :<ul>
+<li><strong>TASK_RUNNING</strong> : Le processus est prêt à être exécuté par un processeur</li>
+<li><strong>TASK_INTERRUPTIBLE</strong> : Le processus est en attente d'un évènement (il n'est pas éligible). Il peut cependant être réveillé (appel système interrompu) par un signal</li>
+<li><strong>TASK_UNINTERRPTIBLE</strong> : Idem que <strong>TASK_UNINTERRPTIBLE</strong>, sauf que l'appel système lancé par le processus ne pourra pas être interrompu par un signal</li>
+</ul>
+</li>
+<li><strong>schedule_timeout()</strong> : endort le processus courant jusqu'à l'expiration du timer (dont la durée est passée en paramètre). La valeur du timeout est exprimée en <em>jiffies</em>.<br><u>Note</u> : le retour de la fonction <strong>schedule_timeout()</strong> est un entier qui représente le temps restant en <em>jiffies</em>. Ce temps restant est lié à l'état du processus courant :<ul>
+<li>si l'état est à <strong>TASK_UNINTERRPTIBLE</strong>, la valeur retournée sera toujours 0 car le processus ne pouvant pas être interrompu, on a la garantie que le timer pourra s'achever</li>
+<li>si l'état est à <strong>TASK_INTERRPTIBLE</strong>, la valeur retournée pourra être 0 si le processus n'a pas reçu entretemps un signal. Sinon, la valeur retournée sera égale au temps restant en <em>jiffies</em> après délivrance du signal. Cela sous-entend au final qu'on aura attendu moins longtemps que prévu.</li>
+</ul>
+</li>
+<li><strong>kthread_run()</strong> : Créé et réveille un thread. <strong>kthread_run()</strong> est un <em>wrapper</em> (enveloppe) qui encapsule <strong>kthread_create()</strong> (qui créé un thread) et <strong>wake_up_process()</strong> (qui réveille un processus spécifique, mais marche aussi pour les threads). <span style="color:red;">À la ligne 33 du fichier <strong>include/linux/kthread.h</strong>, on voit que la fonction <strong>kthread_create()</strong> retourne une structure de type <strong>task_struct</strong>, qui est ensuite passé à la fonction <strong>wake_up_process()</strong>. Celle-ci permet normalement de réveiller un processus mais semble aussi marcher pour les threads. Est-ce que cela signifie qu'un kthread est vu comme une tâche classique ?</span></li>
+<li><strong>kthread_stop()</strong> : Stoppe un thread créé par <strong>kthread_create()</strong></li>
+</ul>
+<p><span style="color:red;">Qu'est-ce que jiffie ?</span></p>
+<p><span style="color:red;">Quand on utilise <strong>set_current_state()</strong> pour changer l'état du processus à <strong>TASK_UNINTERRPTIBLE</strong>, est-ce que c'est la fonction <strong>schedule_timeout()</strong> qui remet son état à <strong>TASK_RUNNING</strong> ?</span></p>
+<p>Après avoir chargé le module, le noyau ne crashe pas mais un message apparait dans les logs du système :</p>
+<pre><code>[ 1544.483389] Hanging module loaded
+...
+[ 1590.950379] INFO: task my_hanging_fn:284 blocked for more than 30 seconds.
+[ 1590.950961]       Tainted: G           O    4.2.3 #6
+[ 1590.951153] &quot;echo 0 &gt; /proc/sys/kernel/hung_task_timeout_secs&quot; disables this message.
+[ 1590.951511] my_hanging_fn   D 0000000000000000     0   284      2 0x00000000
+[ 1590.952128]  ffff88007bdc7dc8 0000000000000046 ffff880079568c00 ffff88007956c800
+[ 1590.952486]  0000000000000282 ffff88007bdc8000 ffff88007bdc7e18 000000010001fd90
+[ 1590.952776]  ffff88007fc0e680 ffff88007fc0e680 ffff88007bdc7de8 ffffffff81aa45b7
+[ 1590.953118] Call Trace:
+[ 1590.953859]  [&lt;ffffffff81aa45b7&gt;] schedule+0x37/0x80
+[ 1590.954098]  [&lt;ffffffff81aa7a15&gt;] schedule_timeout+0x115/0x210
+[ 1590.954336]  [&lt;ffffffff8118ab30&gt;] ? trace_event_raw_event_tick_stop+0xc0/0xc0
+[ 1590.954886]  [&lt;ffffffffa0000000&gt;] ? 0xffffffffa0000000
+[ 1590.955431]  [&lt;ffffffffa0000037&gt;] my_hanging_fn+0x37/0x50 [hanging]
+[ 1590.955657]  [&lt;ffffffff81146372&gt;] kthread+0xd2/0xf0
+[ 1590.955846]  [&lt;ffffffff811462a0&gt;] ? kthread_create_on_node+0x180/0x180
+[ 1590.956080]  [&lt;ffffffff81aa8c9f&gt;] ret_from_fork+0x3f/0x70
+[ 1590.956277]  [&lt;ffffffff811462a0&gt;] ? kthread_create_on_node+0x180/0x180
+...
+[ 1604.480280] done waiting
+</code></pre>
+
+<p>Quelques dizaines de secondes après le chargement du module, le noyau nous communique un message stipulant que notre tâche (en réalité notre thread) <strong>my_hanging_fn</strong> est bloquée depuis plus de 30 secondes. Il s'agit en réalité de la fonctionnalité noyau <em>Detect Hung Tasks</em>, qui prend forme d'un timeout permettant de détecter les <em>hung tasks</em> (les tâches suspendues). Les <em>hung tasks</em> sont des tâches non-interruptibles (qui ne peuvent donc pas être stoppées par un signal) restées bloquées trop longtemps, cas considéré comme anormal par le noyau.<br>La fonctionnalité <em>Detect Hung Tasks</em> ne se contente cependant que d'avertir qu'une tâche est bloquée trop longtemps. C'est purement informatif, elle ne provoque pas un crash du noyau ni l'arrêt du processus incriminé (le message "done waiting" est affiché).</p>
+<p><u>Note</u> : les 30 secondes mentionnées ici sont une valeur paramétrable de deux manières :</p>
+<ul>
+<li>Lors de la configuration du noyau, se rendre dans la section <strong>Kernel hacking</strong>, <strong>Debug Lockups and Hangs</strong>. Activer si elle ne l'est pas la configuration <strong>Detect Hung Tasks</strong> puis préciser dans la sous-configuration <strong>()  Default timeout for hung task detection (in seconds)</strong> le nombre de secondes voulues. (Re)compiler le noyau.</li>
+<li>Le fichier <strong>/proc/sys/kernel/hung_task_timeout_secs</strong> permet de changer à la volée le nombre de secondes. Il peut être lu (pour connaître la valeur) et modifié (la nouvelle valeur sera donc le nombre de secondes avant que le noyau réagisse à une tâche bloquée). <u>Attention</u> : une valeur égale à 0 désactive les avertissements du noyau quant aux tâches bloquées.<br><u>Note</u> : pour savoir si la fonctionnalité <em>Detect Hung Tasks</em> est déjà présente dans le noyau actuel, lancer :<br><code>zcat /proc/config.gz | grep CONFIG_DETECT_HUNG_TASK</code></li>
+</ul>
+<p><span style="color:red;">Quand j'ai chargé le module <strong>hanging.ko</strong>, cela a mit 50 secondes (précisément) et non 30 avant d'avoir le message informatif de la fonctionnalité <em>Detect Hung Tasks</em>. Pourtant le fichier <strong>/proc/sys/kernel/hung_task_timeout_secs</strong> a bien affiché 30. Pourquoi cette différence en pratique ?</span></p>
+<h4>Question 3</h4>
+<p>Pour interrompre le noyau lors d'un avertissement de la fonctionnalité <em>Detect Hung Tasks</em>, il suffit de se rendre dans la section <strong>Kernel hacking</strong>, <strong>Debug Lockups and Hangs</strong> et activer la fonctionnalité <strong>Panic (Reboot) On Hung Tasks</strong>. (Re)compiler le noyau. En rechargeant le module <strong>hanging.ko</strong> et en attendant, on constatera que le message n'est plus seulement informatif et provoque également le crash du noyau (passage en mode debug).</p>
+<h4>Question 4</h4>
+<p><span style="color:red;">Je dirais oui mais je ne suis pas certain (montrer au prof le fichier <strong>backtrace-ex3-q4.txt</strong>)</span></p>
+<h4>Question 5</h4>
+<p>Pour afficher correctement la pile d’appels du module au moment du bug, il faut tout d'abord commencer par retrouver le PID de notre tâche/thread. Pour cela, on utilise la commande <strong>monitor ps</strong> :</p>
+<pre><code>(gdb) monitor ps
+61 sleeping system daemon (state M) processes suppressed,
+use 'ps A' to see all.
+Task Addr               Pid   Parent [*] cpu State Thread             Command
+0xffff88007c8eb000       15        2  1    0   R  0xffff88007c8eb900 *khungtaskd
+
+0xffff88007d3f8000        1        0  0    0   S  0xffff88007d3f8900  systemd
+0xffff88007c8eb000       15        2  1    0   R  0xffff88007c8eb900 *khungtaskd
+0xffff88007cb80c00      188        1  0    0   R  0xffff88007cb81500  systemd-journal
+0xffff88007c0d9800      204        1  0    0   S  0xffff88007c0da100  systemd-udevd
+0xffff88007c9aec00      220        1  0    0   S  0xffff88007c9af500  systemd-logind
+0xffff88007c9ae000      221        1  0    0   S  0xffff88007c9ae900  dbus-daemon
+0xffff88007cb80000      222        1  0    0   S  0xffff88007cb80900  systemd-network
+0xffff88007c0a8000      225        1  0    0   S  0xffff88007c0a8900  agetty
+0xffff88007c0abc00      229        1  0    0   S  0xffff88007c0ac500  login
+0xffff88007cb82400      259        1  0    0   S  0xffff88007cb82d00  systemd
+0xffff88007cb83000      260      259  0    0   S  0xffff88007cb83900  (sd-pam)
+0xffff88007cb81800      262      229  0    0   S  0xffff88007cb82100  bash
+0xffff88007cb86000      267        2  0    0   D  0xffff88007cb86900  my_hanging_fn
+</code></pre>
+
+<p>Une fois le PID obtenu (numéro 267, soit <strong>my_hanging_fn</strong>), on utilise la commande <strong>monitor btp</strong>, qui affiche la pile du processus dont le PID est fourni en paramètre :</p>
+<pre><code>(gdb) monitor btp 267
+Stack traceback for pid 267
+0xffff88007cb86000      267        2  0    0   D  0xffff88007cb86900  my_hanging_fn
+ ffff88007b91bdc8 0000000000000046 ffff88007c0d9800 ffff88007cb86000
+ 0000000000000282 ffff88007b91c000 ffff88007b91be18 00000000ffffaf39
+ ffff88007fc0e680 ffff88007fc0e680 ffff88007b91bde8 ffffffff81aa45b7
+Call Trace:
+ [&lt;ffffffff81aa45b7&gt;] schedule+0x37/0x80
+ [&lt;ffffffff81aa7a15&gt;] schedule_timeout+0x115/0x210
+ [&lt;ffffffff8118ab30&gt;] ? trace_event_raw_event_tick_stop+0xc0/0xc0
+ [&lt;ffffffffa0000000&gt;] ? 0xffffffffa0000000
+ [&lt;ffffffffa0000037&gt;] my_hanging_fn+0x37/0x50 [hanging]
+ [&lt;ffffffff81146372&gt;] kthread+0xd2/0xf0
+ [&lt;ffffffff811462a0&gt;] ? kthread_create_on_node+0x180/0x180
+ [&lt;ffffffff81aa8c9f&gt;] ret_from_fork+0x3f/0x70
+ [&lt;ffffffff811462a0&gt;] ? kthread_create_on_node+0x180/0x180
+</code></pre>
+
+<p>On retrouve donc la même pile d’appels du module qu'au moment du bug.</p>
+<p><u>Rappel</u> : la commande <strong>monitor btp</strong> exige en argument un PID.</p>
+<p><span style="color:red;">Inspecter ma réponse à cette question et poser des questions au prof</span></p>
+<h4>Question 6</h4>
+<p>En lançant la commande <strong>monitor lsmod</strong> (qui liste les modules noyau chargés), nous obtenons la sortie suivante :</p>
+<pre><code>(gdb) monitor lsmod
+Module                  Size  modstruct     Used by
+hanging                 1436  0xffffffffa0000180    0  (Live) 0xffffffffa0000000 [ ]
+</code></pre>
+
+<p>La première adresse affichée correspond à l’adresse mémoire de la structure <strong>module</strong> du module. Il est d'ailleurs possible de visualiser le contenu de cette adresse avec GDB (à l'aide de la commande <strong>print</strong>) :</p>
+<pre><code>(gdb) print *(struct module*) 0xffffffffa0000180
+$3 = {state = MODULE_STATE_LIVE, list = {next = 0xffffffff82269390 &lt;modules&gt;, 
+    prev = 0xffffffff82269390 &lt;modules&gt;}, 
+  name = &quot;hanging&quot;, '\000' &lt;repeats 48 times&gt;, mkobj = {kobj = {
+      name = 0xffff88007bb52328 &quot;hanging&quot;, entry = {next = 0xffff88007c9093c0, 
+        prev = 0xffff88007c95d368}, parent = 0xffff88007c9093d8,
+    ...
+</code></pre>
+
+<p><span style="color:red;">Deuxième adresse ? Semble être la tête de la liste des modules (<strong>list_head</strong>), déduction grâce à <code>print *(struct module*) 0xffffffffa0000000</code></span></p>
+<h4>Question 7</h4>
+<p><span style="color:red;">Module : changer <strong>TASK_UNINTERRPTIBLE</strong> par <strong>TASK_INTERRPTIBLE</strong> ; diminuer le timeout donné en paramètre à <strong>schedule_timeout()</strong> (de <strong>60*HZ</strong> à <strong>30*HZ</strong>)</span></p>
+<p><span style="color:red;">Configuration noyau : désactiver la configuration <strong>Panic (Reboot) On Hung Tasks</strong></span></p>
+<h3>Exercice 4</h3>
+<h4>Question 1</h4>
+<p>En observant le fichier <strong>prdebug.c</strong>, on remarque plusieurs fonctions ayant traits aux <em>timers</em>. L'idée est de programmer des timers qui exécuteront une fonction (un <em>handler</em>) quand expiration. Leur paramétrage se fait grâce aux structures de type <strong>timer_list</strong>, qui contiennent entre autres un champs pour :</p>
+<ul>
+<li>l'adresse de la fonction à exécuter après expiration (<strong>function</strong>)</li>
+<li>les paramètres associés (<strong>data</strong>)</li>
+<li>la date d'expiration (<strong>expires</strong>)</li>
+</ul>
+<p>Les fonctions que l'on retrouve dans le code sont :</p>
+<ul>
+<li><strong>init_timer()</strong> : initialise un timer en initialisant les valeurs de la structure de type <strong>timer_list</strong> passée en argument.<br><u>Attention</u> : les champs <strong>function</strong>, <strong>data</strong> et <strong>expires</strong> ne sont pas remplis par la fonction <strong>init_timer()</strong>, c'est au développeur de le faire avant de démarrer le timer</li>
+<li><strong>add_timer()</strong> : démarre le timer fourni en paramètre</li>
+<li><strong>mod_timer()</strong> : modifie le timeout du timer fourni en paramètre, en le réactivant si celui-ci était inactif</li>
+<li><strong>del_timer_sync()</strong> : désactive au même titre que <strong>del_timer()</strong> le timer fourni en paramètre (qu'il soit actif ou non) mais en attendant en plus la fin de l'exécution du <em>handler</em> (problématiques multi-processeurs)</li>
+<li><strong>kstat_cpu()</strong> : renvoi une structure <strong>kernel_stat</strong>, qui contient <span style="color:red;">???</span></li>
+</ul>
+<p>Le module <strong>prdebug</strong> consiste à afficher périodiquement le nombre d’interruptions reçues par le processeur 0 en s'aidant des timers. Techniquement, le module arme un timer qui se réarmera de lui-même à chaque expiration, en affichant au passage le nombre d'interruptions. Il n'y a aucun message dans les logs du noyau car d'ordinaire la macro <strong>pr_debug()</strong> se contente de rejetter les arguments qui lui sont donnés, et donc de ne rien afficher.</p>
+<p><span style="color:red;">Qu'est-ce que jiffie ?</span></p>
+<p><span style="color:blue;">Mes recherches s'arrêtent ici !!!</span></p>
+<h4><span style="color:blue;">Question 2</span></h4>
+<p>Fonctionnalité noyau <em>dynamic debug</em> (<em>dyndbg</em>).</p>
+<p>Décomposition de la chaîne <code>module prdebug +p</code> :</p>
+<ul>
+<li><code>module prdebug</code> : spécifie que la portée des changements s'applique au module <strong>prdebug</strong></li>
+<li><code>+p</code> : le changement consiste à ajouter (caractère "+") le drapeau "p", qui active les fonctions <strong>prdebug()</strong></li>
+</ul>
+<h4><span style="color:blue;">Question 3</span></h4>
+<p><code>echo -n ’module prdebug +pflm’ &gt; /sys/kernel/debug/dynamic_debug/control</code></p>
+<ul>
+<li>f : Include the function name in the printed message</li>
+<li>l : Include line number in the printed message</li>
+<li>m : Include module name in the printed message</li>
+</ul>
+<h4><span style="color:blue;">Question 4</span></h4>
+<p><code>echo -n ’file prdebug.c line 13 +p’ &gt; /sys/kernel/debug/dynamic_debug/control</code></p>
+<h3><span style="color:blue;">Exercice 5</span></h3>
+<h4><span style="color:blue;">Question 1</span></h4>
+<h4><span style="color:blue;">Question 2</span></h4>
+<h4><span style="color:blue;">Question 3</span></h4>
+<h4><span style="color:blue;">Question 4</span></h4>
+<h4><span style="color:blue;">Question 5</span></h4>
+<h4><span style="color:blue;">Question 6</span></h4>
+<h4><span style="color:blue;">Question 7</span></h4>
+<h4><span style="color:blue;">Question 8</span></h4>
+<h2>TP 5</h2>
+<h3><span style="color:blue;">Exercice 1</span></h3>
+<h4><span style="color:blue;">Question 1</span></h4>
+<p>La structure de type <strong>pid</strong> représente la notion interne du noyau d'un identifiant de processus. Elle se réfère aux tâches individuelles, aux groupes de processus et aux sessions.<br>Présente dans le fichier <strong>include/linux/pid.h</strong>, la structure <strong>pid</strong> est déclarée de la façon suivante :</p>
+<pre><code>struct pid {
+    atomic_t count;
+    unsigned int level;
+    /* lists of tasks that use this pid */
+    struct hlist_head tasks[PIDTYPE_MAX];
+    struct rcu_head rcu;
+    struct upid numbers[1];
+};
+</code></pre>
+
+<h4><span style="color:blue;">Question 2</span></h4>
+<p><span style="color:blue;">Voir ce lien pour des explications détaillées sur le temps (notamment la macro <strong>HZ</strong>) : <a href="https://stackoverflow.com/questions/2731463/converting-jiffies-to-milli-seconds" target="_blank">Ici</a></span></p>
+<p>Déclarée dans le fichier <strong>include/linux/sched.h</strong>, la structure de type <strong>task_struct</strong> contient entre autres les champs <strong>utime</strong> et <strong>stime</strong> (qui enregistrent respectivement les temps CPU <em>user</em> et <em>system</em>). Leur unité de mesure est le <em>tick</em>.</p>
+<h4><span style="color:blue;">Question 3</span></h4>
+<p><span style="color:red;">???</span></p>
+<h3><span style="color:blue;">Exercice 2</span></h3>
+<h4><span style="color:blue;">Question 1</span></h4>
+<p>Voir le fichier <strong>taskmonitor.c</strong>.</p>
+<p>Fonctions utilisées :</p>
+<ul>
+<li><strong>find_get_pid()</strong> : Recherche dans la table de hachage la structure <strong>pid</strong> du PID dont le numéro est donné en paramètre.<br><u>Attention</u> : cette fonction augmente le compteur de référence de la structure <strong>pid</strong> retournée. Il ne faut donc pas oublier de la libérer avec la fonction <strong>put_pid()</strong>.</li>
+<li><strong>put_task_struct()</strong> :</li>
+<li><strong>put_pid()</strong> : </li>
+</ul>
+<p><span style="color:red;">Voir la fonction <strong>pid_nr()</strong> dans le fichier <strong>include/linux/pid.h</strong>, quelle est la différence entre un ID global (vu par le <em>namespace</em> init) et virtuel (vu par le <em>namespace</em> PID de l'actuel) ?</span></p>
+<h4><span style="color:blue;">Question 2</span></h4>
+<p>Voir le fichier <strong>taskmonitor.c</strong>.</p>
+<h4><span style="color:blue;">Question 3</span></h4>
+<p>Voir le fichier <strong>taskmonitor.c</strong>.</p>
+<ul>
+<li><strong>get_pid_task()</strong> : permet d'obtenir la structure <strong>task_struct</strong> d'un processus</li>
+<li><strong>pid_alive()</strong> : permet de savoir la structure <strong>pid</strong> donnée en paramètre correspond à une tâche encore en vie</li>
+</ul>
+<p><span style="color:red;">Pourquoi je peux utiliser avec mes modules <strong>pid_alive()</strong> alors que je ne trouve pas <strong>EXPORT_SYMBOL(pid_alive)</strong> ou <strong>EXPORT_SYMBOL_GPL(pid_alive)</strong> ?</span></p>
+<h3><span style="color:blue;">Exercice 3</span></h3>
+<p>Voir le fichier <strong>Documentation/filesystems/sysfs.txt</strong>.</p>
+<h4><span style="color:blue;">Question 1</span></h4>
+<p>Une structure <strong>kobject</strong> est représenté dans la hiérarchie de <em>sysfs</em> comme un répertoire, une structure <strong>attribute</strong> est représentée sous forme d'un fichier.<br><u>Attention</u> : la structure <strong>attribute</strong> est en fait un attribut "nu", c'est-à-dire qu'il n'a aucun moyen pour lire ou écrire la valeur de l'attribut (c'est-à-dire son fichier dans la hiérarchie de <em>sysfs</em>). Ainsi, les sous-systèmes sont encouragés à définir leur propre structure d'attribut et leurs propres fonctions <em>wrapper</em> (enveloppe) pour l'ajout et la suppression d'attributs d'un type d'objet spécifique. Exemple d'attributs de sous-sytèmes :</p>
+<ul>
+<li><strong>bus_attribute</strong> (<strong>include/linux/device.h</strong>)</li>
+<li><strong>device_attribute</strong> (<strong>include/linux/device.h</strong>)</li>
+<li><strong>kobj_attribute</strong> (<strong>include/linux/kobject.h</strong>)</li>
+<li><strong>module_attribute</strong> (<strong>include/linux/module.h</strong>)</li>
+<li>...</li>
+</ul>
+<p>Chacune de ces structures d'attributs comporte le champs <strong>attr</strong>, qui embarque la structure <strong>attribute</strong>. Elles comportent de plus les champs <strong>show</strong> et <strong>store</strong>, qui pointent vers l'adresse des fonctions respectivement en charge de la lecture et de l'écriture.</p>
+<p>Il existe trois macros (<strong>__ATTR_RO</strong>, <strong>__ATTR_WO</strong> et <strong>__ATTR_RW</strong>) qui permettent d'éviter à remplir nous-même une structure <strong>XXX_attribute</strong> lors de sa définition. Pour cela, l'argument requis est un nom, qui sera complété durant l'exécution de la macro par le suffixe <strong>_show</strong> et/ou <strong>_store</strong> (selon la macro utilisée).<br><u>Attention</u> : Cela implique d'ailleurs que les fonctions <strong>XXX_show()</strong> et/ou <strong>XXX_store()</strong> doivent être déclarées avant de faire appel aux macros sus-mentionnées.</p>
+<ul>
+<li><strong>sysfs_create_file()</strong> : définie dans le fichier <strong>include/linux/sysfs.h</strong>, la fonction <strong>sysfs_create_file()</strong> créée un fichier à partir d'un <em>attribut</em>. L'emplacement de ce fichier sera déterminé par le <strong>kobject</strong> parent (donné en argument)</li>
+<li><strong>sysfs_remove_file()</strong> : supprime le fichier de l'attribut donné en paramètre</li>
+</ul>
+<p>La variable <strong>kernel_kobj</strong> (de type <strong>kobject</strong>) est déclarée (avec d'autres similaires) dans le fichier <strong>include/linux/kobject.h</strong>. Elle représente dans le <em>sysfs</em> le répertoire <strong>/sys/kernel/</strong>.</p>
+<p><span style="color:red;">J'ai remarqué dans la documentation (<strong>Documentation/filesystems/sysfs.txt</strong>) qu'il existait pour les attributs de sous-systèmes des fonctions spécifiques pour leur création/destruction (telles que <strong>device_create_file()</strong> et <strong>device_remove_file()</strong>). Si on considère les fonctions <strong>sysfs_create_file()</strong> et <strong>sysfs_remove_file()</strong>, celle-ci ne sont en fait que des fonctions de "haut-niveau", elles créée/détruit les attributs sans l'aspect sous-système (<em>device</em>, <em>kobj</em>*...) ???</span></p>
+<h4><span style="color:blue;">Question 2</span></h4>
+<ul>
+<li>Ajout de la fonction <strong>hello_store()</strong></li>
+<li>Changement de la macro <strong>__ATTR_RO</strong> par <strong>__ATTR_RW</strong>.</li>
+</ul>
+<h3><span style="color:blue;">Exercice 4</span></h3>
+<h4><span style="color:blue;">Question 1</span></h4>
+<p>Voir le fichier <strong>taskmonitor.c</strong>.</p>
+<h4><span style="color:blue;">Question 2</span></h4>
+<p>Voir le fichier <strong>taskmonitor.c</strong>.</p>
+<h3><span style="color:blue;">Exercice 5</span></h3>
+<h4><span style="color:blue;">Question 1</span></h4>
+<p>Voir le fichier <strong>helloioctl.c</strong>.</p>
+<ul>
+<li><strong>register_chrdev()</strong> :</li>
+<li><strong>unregister_chrdev()</strong> :</li>
+</ul>
+<p>Pour vérifier que notre driver de périphérique caractères a bien été enregistré, il faut analyser le fichier <strong>/proc/devices</strong> :</p>
+<pre><code>$ cat /proc/devices | grep hello
+245 hello
+</code></pre>
+
+<p>Où "hello" est le nom de notre driver et 245 le numéro majeur qui lui a été attribué.</p>
+<p><span style="color:red;">Dans l'énoncé, on doit utiliser la fonction <strong>unregister_device()</strong> pour supprimer le pilote de périphérique caractères. Or, celle-ci n'est même pas définie dans l'un des <em>headers</em> du répertoire <strong>include/linux/</strong> (en particulier <strong>fs.h</strong>). À la place, j'ai utilisé <strong>unregister_chrdev()</strong>. Erreur dans l'énoncé ?</span></p>
+<p><span style="color:red;">Avec la fonction <strong>register_chrdev()</strong>, on créé un driver de périphérique caractère en y donnant en paramètre une structure <strong>file_operations</strong>. Lorsqu'on utilisera <strong>open()</strong>, <strong>read()</strong>, etc... sur le fichier spécial lié au driver, ce seront les fonctions définies dans la structure et associées à chacun des appels systèmes qui seront appelés. Si une opération manque (pas d'adresse dans la structure), alors est-ce que c'est l'opération du système de fichier dans lequel est stocké le fichier spécial qui est appelée ?</span> </p>
+<h4><span style="color:blue;">Question 2</span></h4>
+<p>Consulter le fichier <strong>Documentation/ioctl/ioctl-number.txt</strong> pour obtenir des détails sur les macros <strong>_IOR()</strong>, <strong>_IOW()</strong> et <strong>_IOWR()</strong>.</p>
+<p>La structure <strong>file_operations</strong>, définie dans <strong>include/linux/fs.h</strong>, permet de décrire l'interface entre un système de fichiers (ext3, reiserfs, fat, ntfs...) et l'utilisateur. En effet, quasiment tous ses champs sont des pointeurs de fonctions, les mêmes qui seront appelées quand l'utilisateur fera par exemple un <strong>open()</strong>, <strong>read()</strong>, <strong>write()</strong>, <strong>mmap()</strong>, etc... sur le système de fichier concerné par la structure. Cette structure est donc intimement liée à un pilote du système de fichiers spécifique, et est consultée à chaque opération sur ce système de fichier en question.<br>Cette structure est aussi intéressante par rapport à l'appel système <strong>ioctl()</strong>, puisque l'un de ses champs est <strong>unlocked_ioctl</strong>. Celui-ci contient l'adresse de la fonction qui sera appelée lors de l'utilisation de <strong>ioctl()</strong>.</p>
+<p>Inclure le code <code>#include &lt;asm/uaccess.h&gt;</code> pour utiliser <strong>copy_to_user()</strong>.</p>
+<h4><span style="color:blue;">Question 3</span></h4>
+<h3><span style="color:blue;">Exercice 6</span></h3>
+<h4><span style="color:blue;">Question 1</span></h4>
+<h4><span style="color:blue;">Question 2</span></h4>
+<p>Voir les fichiers <strong>taskmonitor.h</strong>, <strong>taskmonitor.c</strong> et <strong>ioctl_period.c</strong>.<br><u>Note</u> : pour les besoins du TP (pouvoir changer le type du paramètre <strong>arg</strong> de <strong>ioctl()</strong>), une macro <strong>copy_to_user_by_struct</strong> est définie dans le fichier <strong>taskmonitor.h</strong>. Si elle est décommentée, alors le type du paramètre <strong>arg</strong> de <strong>ioctl()</strong> sera une structure <strong>task_sample</strong>, sinon un <strong>char *</strong>.</p>
+<h4><span style="color:blue;">Question 3</span></h4>
+<p>Pour utiliser des requêtes sans argument avec <strong>ioctl()</strong>, il suffit d'utiliser la macro <strong>_IO()</strong> au lieu de <strong>_IOR()</strong>, <strong>_IOW()</strong>...</p>
+<h4><span style="color:blue;">Question 4</span></h4>
+<h1>Astuces</h1>
+<ul>
+<li>
+<p>Pour obtenir la configuration du noyau Linux actuellement utilisé, il existe le fichier <strong>/proc/config.gz</strong> :<br><code>zcat /proc/config.gz</code><br>Ce fichier est en fait le même fichier <strong>.config</strong> utilisé lors de la compilation du noyau courant. Ainsi, pour savoir si telle ou telle fonctionnalité est présente, il suffit d'utiliser sur la sortie la commande <strong>grep</strong> avec la fonctionnalité désirée.</p>
+</li>
+<li>
+<p>Avec les <em>workqueues</em>, quand on utilise la macro <strong>INIT_WORK()</strong> et qu'on lui donne un pointeur de fonction, ne surtout pas oublier que le prototype de cette fonction doit être :<br><code>void my_function(struct work_struct *work)</code><br>Autrement dit, cette fonction doit avoir 1 paramètre de type pointeur de <strong>work_struct</strong>. Sinon, on aura l'avertissement :<br><code>warning: assignment from incompatible pointer type</code></p>
+</li>
+<li>Dans le projet NMV, on devait implémenter la commande <strong>lsmod</strong>. Pour cela, on utilisait l'appel-système <strong>ioctl()</strong> qui nous renvoyait une grosse (selon le nombre de modules actuellement chargés) chaîne de caractères. On passait donc par le noyau (via un module qu'on a développé). Comment procède la vraie commande <strong>lsmod</strong> ? Elle ouvre le fichier <strong>/proc/modules</strong> et affiche son contenu (avec un peu de formatage). Beaucoup de bruit pour pas grand chose, non ?</li>
+<li>Quand on génère un fichier <strong>core</strong>, sa taille (le miens faisait environ 57 Mo) est-elle en fait celle de la mémoire (data + pile + text) au moment du plantage ?</li>
+</ul>
+<p>(gdb) monitor lsmod
+Module                  Size  modstruct     Used by
+taskmonitor             2171  0xffffffffa0000400    0  (Live) 0xffffffffa0000000 [ ]</p>
+<p>Quand on debug avec GDB, on a le binaire (<strong>vmlinuz</strong>) mais pas les modules. Il faut donc charger en plus le code des modules (les <strong>*.ko</strong>).</p>
+<p>(gdb) add-symbol-file taskmonitor.ko 0xffffffffa0000000 
+add symbol table from file "taskmonitor.ko" at
+    .text_addr = 0xffffffffa0000000</p>
+<p>Commande GDB <strong>frame</strong></p>
+</body>
+</html>
